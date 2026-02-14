@@ -3,10 +3,11 @@
 ## Overview
 This repository uses a split-bundle architecture:
 - `apps/v9/price.bundle.js`: low-frequency price bundle
-- `apps/v9/stock.bundle.js`: high-frequency stock bundle
+- `apps/v9/stock.bundle.js`: local fallback stock bundle
+- `apps/v9/runtime-config.js`: remote stock runtime config (optional switch)
 
-Stock can be synchronized from an external source through GitHub Actions.
-Netlify production publish root is `apps/v9` (self-contained).
+Stock is synchronized from an external source via GitHub Actions.
+Netlify publish root is `apps/v9`.
 
 ## Project Layout
 - `apps/v9/`: production query UI
@@ -21,7 +22,7 @@ Netlify production publish root is `apps/v9` (self-contained).
 - `config/stock-source.json`: local stock-source template
 - `config/stock-source.schema.json`: stock-source schema
 
-Production source credentials should come from GitHub Secrets, not files:
+Production source credentials should come from GitHub Secrets:
 - `STOCK_SOURCE_URL`
 - `STOCK_SOURCE_TOKEN` (optional)
 
@@ -74,9 +75,10 @@ npm run doctor
 If you drag-and-drop manually, drag `apps/v9` only.
 
 ## Frontend Stock Loading Policy
-- Production query UI reads inventory only from local `apps/v9/stock.bundle.js`.
-- Manual stock URL override in frontend has been removed by design.
-- Reason: avoid CORS/auth/HTML-link misuse and keep a single stable update path.
+- Manual stock URL override UI is removed.
+- Query page always loads local `apps/v9/stock.bundle.js` as fallback.
+- Query page can optionally load remote `stock.bundle.js` from `apps/v9/runtime-config.js`.
+- If remote load fails, UI falls back to local stock and continues working.
 
 ## GitHub Actions
 - `.github/workflows/sync-stock.yml`: scheduled stock sync
@@ -86,8 +88,13 @@ If you drag-and-drop manually, drag `apps/v9` only.
 1. Loads path contract from `config/system.json`
 2. Pulls source from secrets
 3. Validates source kind and bounds
-4. Writes `apps/v9/stock.bundle.js`
-5. Commits only when file changed
+4. Builds temporary stock bundle artifact (`tmp/stock.bundle.js`)
+5. Publishes only `apps/v9/stock.bundle.js` to branch `stock-data`
+6. Commits only when file content changed
+
+Local sync script behavior:
+- `tools/sync_stock_bundle.mjs` is idempotent.
+- If `byCode` hash is unchanged, it skips write and returns `changed=false`.
 
 ## Security Baseline (Recommended)
 For static hosting, configure:
@@ -103,5 +110,6 @@ Also recommended:
 - Inventory key is `code` (`byCode`).
 - Price bundle can remain encrypted.
 - Stock bundle remains plain text for high-frequency updates.
-- Stock updates must go through GitHub Actions (`sync-stock.yml`) and Netlify auto deploy.
+- Netlify should track `main` only; high-frequency stock updates are pushed to `stock-data`.
+- For zero-redeploy stock updates, set `apps/v9/runtime-config.js` to jsDelivr URL of `stock-data` branch.
 - When `price.bundle.js` is encrypted (`secured: true`), first visit requires password input.

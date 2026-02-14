@@ -116,6 +116,7 @@
     </div>
 </div>
 
+<script src="runtime-config.js"></script>
 <script src="price.bundle.js"></script>
 <script src="stock.bundle.js"></script>
 <script>
@@ -133,6 +134,7 @@
             await loadStockBundle();
             rebuildMergedDB();
             setStatus("数据已加载", "ok");
+            await tryLoadRemoteStockBundle();
         } catch (err) {
             setStatus("数据加载失败", "error");
             showToast(err.message || "加载失败");
@@ -198,19 +200,102 @@
 
         const parsed = JSON.parse(jsonText || "{}");
         PRICE_DATA = { bySpec: parsed.bySpec || {} };
-        updateVersionText(bundle.meta, null);
+        updateVersionText(bundle.meta, null, "本地(自动同步)");
     }
 
     async function loadStockBundle() {
-        if (!window.STOCK_BUNDLE) throw new Error("未找到 stock.bundle.js");
+        const local = parseStockBundle(window.STOCK_BUNDLE);
+        STOCK_DATA = { byCode: local.byCode };
+        updateVersionText(window.PRICE_BUNDLE.meta, local.meta, "本地(自动同步)");
+    }
 
-        const stockObj = window.STOCK_BUNDLE;
+    function parseStockBundle(stockObj) {
+        if (!stockObj) throw new Error("未找到 stock.bundle.js");
         if (stockObj.secured) throw new Error("库存包必须保持明文");
-
         const text = decodePlainPayload(stockObj.payload || "");
         const parsed = JSON.parse(text || "{}");
-        STOCK_DATA = { byCode: parsed.byCode || {} };
-        updateVersionText(window.PRICE_BUNDLE.meta, stockObj.meta);
+        return {
+            byCode: parsed.byCode || {},
+            meta: stockObj.meta || null
+        };
+    }
+
+    function getRemoteStockConfig() {
+      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remoteStock) || {};
+      return {
+        enabled: !!cfg.enabled,
+        url: String(cfg.url || "").trim(),
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
+        cacheBust: String(cfg.cacheBust || "hourly")
+      };
+    }
+
+    function withCacheBust(url, cacheMode) {
+      const mode = String(cacheMode || "hourly").toLowerCase();
+      const now = new Date();
+      let key = String(now.getTime());
+      if (mode === "hourly") {
+        key = now.toISOString().slice(0, 13).replace(/[-:T]/g, "");
+      } else if (mode === "daily") {
+        key = now.toISOString().slice(0, 10).replace(/-/g, "");
+      }
+      const sep = url.includes("?") ? "&" : "?";
+      return url + sep + "v=" + encodeURIComponent(key);
+    }
+
+    function loadRemoteStockScript(url, timeoutMs) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        let done = false;
+        const timer = setTimeout(() => {
+          if (done) return;
+          done = true;
+          script.remove();
+          reject(new Error("远程库存加载超时"));
+        }, timeoutMs);
+
+        script.src = url;
+        script.async = true;
+        script.onload = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          resolve(window.STOCK_BUNDLE);
+        };
+        script.onerror = () => {
+          if (done) return;
+          done = true;
+          clearTimeout(timer);
+          script.remove();
+          reject(new Error("远程库存脚本加载失败"));
+        };
+        document.head.appendChild(script);
+      });
+    }
+
+    async function tryLoadRemoteStockBundle() {
+      const cfg = getRemoteStockConfig();
+      if (!cfg.enabled || !cfg.url) return false;
+
+      const localBundle = window.STOCK_BUNDLE;
+      const localParsed = parseStockBundle(localBundle);
+
+      try {
+        const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
+        const remoteBundle = await loadRemoteStockScript(remoteUrl, cfg.timeoutMs);
+        const remoteParsed = parseStockBundle(remoteBundle);
+        STOCK_DATA = { byCode: remoteParsed.byCode };
+        rebuildMergedDB();
+        updateVersionText(window.PRICE_BUNDLE.meta, remoteParsed.meta, "远程(stock-data)");
+        return true;
+      } catch (err) {
+        window.STOCK_BUNDLE = localBundle;
+        STOCK_DATA = { byCode: localParsed.byCode };
+        rebuildMergedDB();
+        updateVersionText(window.PRICE_BUNDLE.meta, localParsed.meta, "本地(回退)");
+        showToast("远程库存失败，已回退本地");
+        return false;
+      }
     }
 
     function rebuildMergedDB() {
@@ -232,10 +317,10 @@
         });
     }
 
-    function updateVersionText(priceMeta, stockMeta) {
+    function updateVersionText(priceMeta, stockMeta, stockSource) {
       const pVer = (priceMeta && priceMeta.version) ? priceMeta.version : "-";
       const sVer = (stockMeta && stockMeta.version) ? stockMeta.version : "-";
-      const src = "本地(自动同步)";
+      const src = stockSource || "本地(自动同步)";
       document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
     }
 

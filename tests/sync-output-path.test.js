@@ -54,11 +54,14 @@ async function run() {
 
     assert.strictEqual(result.outputPath, outPath);
     assert.strictEqual(result.kind, "json");
+    assert.strictEqual(result.changed, true);
+    assert.ok(/^[a-f0-9]{64}$/.test(result.dataHash), "dataHash should be sha256");
     assert.ok(fs.existsSync(outPath), "output stock bundle should exist");
     const script = fs.readFileSync(outPath, "utf8");
     assert.ok(script.includes("window.STOCK_BUNDLE"), "output should define STOCK_BUNDLE");
     assert.ok(script.includes("\"source\":\"https://example.com/stock.json\""));
     assert.ok(script.includes("\"generated_at\""));
+    assert.ok(script.includes("\"data_hash\""));
   } finally {
     global.fetch = originalFetch;
     fs.rmSync(tmpDir, { recursive: true, force: true });

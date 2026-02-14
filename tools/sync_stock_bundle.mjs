@@ -1,4 +1,5 @@
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import vm from "node:vm";
@@ -32,6 +33,7 @@ export function parseArgs(argv) {
     configPath: DEFAULT_SYSTEM_CONFIG,
     stockConfigPath: DEFAULT_STOCK_CONFIG,
     schemaPath: DEFAULT_STOCK_SCHEMA,
+    outputPath: "",
   };
   const args = Array.isArray(argv) ? argv : [];
   for (let i = 0; i < args.length; i += 1) {
@@ -39,6 +41,7 @@ export function parseArgs(argv) {
     if (arg === "--config" && args[i + 1]) out.configPath = args[++i];
     else if (arg === "--stock-config" && args[i + 1]) out.stockConfigPath = args[++i];
     else if (arg === "--schema" && args[i + 1]) out.schemaPath = args[++i];
+    else if (arg === "--output" && args[i + 1]) out.outputPath = args[++i];
   }
   return out;
 }
@@ -201,15 +204,52 @@ async function readXlsxRows(buffer) {
   return XLSX.utils.sheet_to_json(ws, { defval: "" });
 }
 
-function byCodeFromStockScript(scriptText) {
+function parseStockBundleFromScript(scriptText) {
   const sandbox = { window: {} };
   vm.createContext(sandbox);
   vm.runInContext(String(scriptText || ""), sandbox, { timeout: 3000 });
   const stockBundle = sandbox.window.STOCK_BUNDLE || sandbox.STOCK_BUNDLE;
   if (!stockBundle) throw new Error("stock.bundle.js did not define window.STOCK_BUNDLE");
   if (stockBundle.secured) throw new Error("stock bundle must remain plain text");
+  return stockBundle;
+}
+
+function byCodeFromStockScript(scriptText) {
+  const stockBundle = parseStockBundleFromScript(scriptText);
   const decoded = BundleUtils.decodeStockBundle(stockBundle);
   return decoded.byCode || {};
+}
+
+function canonicalizeByCode(stockByCode) {
+  const input = stockByCode || {};
+  const keys = Object.keys(input).sort();
+  const sorted = {};
+  for (let i = 0; i < keys.length; i += 1) {
+    const key = keys[i];
+    sorted[key] = String(input[key] ?? "");
+  }
+  return JSON.stringify(sorted);
+}
+
+function hashByCode(stockByCode) {
+  return createHash("sha256").update(canonicalizeByCode(stockByCode), "utf8").digest("hex");
+}
+
+async function readExistingBundleInfo(outputPath) {
+  try {
+    const scriptText = await readFile(outputPath, "utf8");
+    const bundle = parseStockBundleFromScript(scriptText);
+    const decoded = BundleUtils.decodeStockBundle(bundle);
+    const byCode = decoded.byCode || {};
+    return {
+      byCode,
+      dataHash: hashByCode(byCode),
+      generatedAt: bundle.meta && bundle.meta.generated_at ? String(bundle.meta.generated_at) : "",
+    };
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    return null;
+  }
 }
 
 function isKindAllowed(kind, allowedKinds) {
@@ -285,12 +325,13 @@ async function parseSourceToByCode(kind, body) {
   throw new Error(`Unsupported stock source type: ${kind}`);
 }
 
-function buildStockBundleScript(byCode, sourceUrl) {
+function buildStockBundleScript(byCode, sourceUrl, dataHash) {
   const bundle = BundleUtils.encodeStockBundle(byCode || {});
   bundle.meta = {
     ...bundle.meta,
     source: sourceUrl,
     generated_at: new Date().toISOString(),
+    data_hash: dataHash,
   };
   return {
     bundle,
@@ -321,7 +362,7 @@ export async function resolveRuntimeConfig(options) {
     args,
     systemConfig,
     stockConfig: mergedStock,
-    outputPath: resolveFromRoot(systemConfig.app.stock_bundle_path),
+    outputPath: resolveFromRoot(opts.outputPath || args.outputPath || systemConfig.app.stock_bundle_path),
   };
 }
 
@@ -366,9 +407,24 @@ export async function syncStockBundle(options) {
 
   const body = await readResponseBodyByKind(response, kind, maxBytes);
   const byCode = await parseSourceToByCode(kind, body);
-  const built = buildStockBundleScript(byCode, sourceUrl);
+  const dataHash = hashByCode(byCode);
 
   const outputPath = opts.outputPath || runtime.outputPath;
+  const existing = await readExistingBundleInfo(outputPath);
+  if (existing && existing.dataHash === dataHash) {
+    return {
+      outputPath,
+      kind,
+      contentType,
+      rowCount: Object.keys(byCode || {}).length,
+      source: sourceUrl,
+      generatedAt: existing.generatedAt || "",
+      changed: false,
+      dataHash,
+    };
+  }
+
+  const built = buildStockBundleScript(byCode, sourceUrl, dataHash);
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, built.script, "utf8");
 
@@ -379,6 +435,8 @@ export async function syncStockBundle(options) {
     rowCount: Object.keys(byCode || {}).length,
     source: sourceUrl,
     generatedAt: built.bundle.meta.generated_at,
+    changed: true,
+    dataHash,
   };
 }
 
@@ -386,11 +444,13 @@ const isCli = process.argv[1] && path.resolve(process.argv[1]) === __filename;
 if (isCli) {
   syncStockBundle({ argv: process.argv.slice(2) })
     .then((res) => {
-      console.log(`[sync-stock] kind=${res.kind} rows=${res.rowCount} output=${res.outputPath}`);
+      const state = res.changed ? "updated" : "unchanged";
+      console.log(
+        `[sync-stock] ${state} kind=${res.kind} rows=${res.rowCount} hash=${res.dataHash} output=${res.outputPath}`
+      );
     })
     .catch((err) => {
       console.error(`[sync-stock] failed: ${err.message}`);
       process.exit(1);
     });
 }
-

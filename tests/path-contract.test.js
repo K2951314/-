@@ -23,10 +23,12 @@ function run() {
   assert.ok(exists(system.app.web_root), "web_root does not exist");
   assert.ok(exists(system.app.price_bundle_path), "price bundle path does not exist");
   assert.ok(exists(system.app.stock_bundle_path), "stock bundle path does not exist");
+  assert.ok(exists("apps/v9/runtime-config.js"), "runtime stock config should exist");
   assert.ok(exists(system.sync.script_path), "sync script path does not exist");
 
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/sync-stock.yml"), "utf8");
   assert.ok(workflow.includes("config/system.json"), "workflow should read config/system.json");
+  assert.ok(workflow.includes("stock-data"), "workflow should publish stock bundle to stock-data branch");
 
   const netlify = fs.readFileSync(path.join(process.cwd(), "netlify.toml"), "utf8");
   assert.ok(netlify.includes('publish = "apps/v9"'), "netlify publish directory should target apps/v9");

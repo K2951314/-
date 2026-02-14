@@ -4,6 +4,7 @@ const path = require("path");
 
 function run() {
   const html = fs.readFileSync(path.join(process.cwd(), "apps/v9/index.html"), "utf8");
+  assert.ok(html.includes('src="runtime-config.js"'), "v9 index should load runtime-config.js");
   assert.ok(html.includes('src="price.bundle.js"'), "v9 index should load price bundle");
   assert.ok(html.includes('src="stock.bundle.js"'), "v9 index should load stock bundle");
   assert.ok(
@@ -12,7 +13,7 @@ function run() {
   );
   assert.ok(!html.includes('id="stockBundleUrl"'), "v9 index should not expose stock URL input");
   assert.ok(!html.includes("applyStockSource"), "v9 index should not expose remote stock apply action");
-  assert.ok(!html.includes("loadRemoteStock"), "v9 index should not include remote stock loader");
+  assert.ok(html.includes("tryLoadRemoteStockBundle"), "v9 index should include remote stock runtime loader");
 }
 
 try {

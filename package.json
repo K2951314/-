@@ -5,7 +5,7 @@
   "description": "v9 pricing/stock split bundle tooling",
   "type": "commonjs",
   "scripts": {
-    "test": "node tests/path-contract.test.js && node tests/stock-source-validation.test.js && node tests/sync-output-path.test.js && node tests/v9-load-smoke.test.js",
+    "test": "node tests/path-contract.test.js && node tests/stock-source-validation.test.js && node tests/sync-output-path.test.js && node tests/sync-no-overwrite.test.js && node tests/sync-hash-change.test.js && node tests/v9-load-smoke.test.js",
     "sync:stock": "node tools/sync_stock_bundle.mjs --config config/system.json --stock-config config/stock-source.json",
     "doctor": "node scripts/doctor.mjs"
   },
