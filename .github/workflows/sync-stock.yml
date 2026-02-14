@@ -8,36 +8,43 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: sync-stock-bundle
+  cancel-in-progress: false
+
 jobs:
   sync-stock:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: "20"
 
-      - name: Install dependency
-        run: npm install xlsx
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate required secret
+        run: |
+          if [ -z "${{ secrets.STOCK_SOURCE_URL }}" ]; then
+            echo "STOCK_SOURCE_URL is not set"
+            exit 1
+          fi
 
       - name: Build stock bundle
         env:
           STOCK_SOURCE_URL: ${{ secrets.STOCK_SOURCE_URL }}
           STOCK_SOURCE_TOKEN: ${{ secrets.STOCK_SOURCE_TOKEN }}
-        run: node tools/sync_stock_bundle.mjs
+        run: |
+          SCRIPT_PATH=$(node -e "const c=require('./config/system.json'); process.stdout.write(c.sync.script_path)")
+          node "$SCRIPT_PATH" --config config/system.json --stock-config config/stock-source.json
 
       - name: Commit updated stock bundle
         run: |
-          V9_DIR="$(find . -maxdepth 1 -type d -name 'v9*' | head -n 1)"
-          if [ -z "$V9_DIR" ]; then
-            echo "v9 directory not found"
-            exit 1
-          fi
-
-          TARGET="$V9_DIR/stock.bundle.js"
+          TARGET=$(node -e "const c=require('./config/system.json'); process.stdout.write(c.app.stock_bundle_path)")
           if git diff --quiet -- "$TARGET"; then
             echo "No stock bundle changes"
             exit 0

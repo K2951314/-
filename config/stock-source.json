@@ -1,0 +1,8 @@
+{
+  "stock_source_url": "",
+  "stock_source_token": "",
+  "allowed_content_types": ["csv", "json", "xlsx", "js"],
+  "timeout_ms": 15000,
+  "max_bytes": 20971520,
+  "allowed_domains": []
+}

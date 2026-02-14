@@ -1,0 +1,577 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>智能查价系统 v9</title>
+<style>
+    body { font-family: -apple-system, 'Segoe UI', Roboto, sans-serif; background: #f0f2f5; padding: 15px; margin: 0; color: #333; }
+    .container { max-width: 1240px; margin: 0 auto; background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); min-height: 90vh; }
+    .header { display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #f0f0f0; padding-bottom: 15px; margin-bottom: 10px; }
+    .header h2 { margin: 0; color: #1a73e8; }
+    .status-badge { font-size: 12px; padding: 4px 8px; border-radius: 4px; background: #eee; color: #666; }
+    .status-badge.ok { background: #e6f4ea; color: #1e8e3e; }
+    .status-badge.lock { background: #fff3e0; color: #e65100; cursor: pointer; }
+    .versions { font-size: 12px; color: #64748b; margin-bottom: 14px; }
+
+    .panel { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e0e0e0; }
+    .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+    .group { flex: 1; min-width: 120px; }
+    .group.stock-url { min-width: 280px; flex: 2; }
+    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 5px; color: #555; }
+    input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
+
+    .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; color: white; font-weight: bold; cursor: pointer; min-width: 90px; }
+    .btn-search { background: #1a73e8; }
+    .btn-search:hover { background: #1557b0; }
+    .btn-copy { background: #f59e0b; }
+    .btn-copy:hover { background: #d97706; }
+    .btn-stock { background: #0ea5e9; }
+    .btn-stock:hover { background: #0284c7; }
+
+    .copy-opts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; }
+    .opt-lbl { background: white; border: 1px solid #ddd; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: flex; align-items: center; cursor: pointer; user-select: none; }
+    .opt-lbl:hover { border-color: #1a73e8; }
+    .opt-lbl input { width: auto; margin-right: 5px; }
+
+    .main { display: flex; gap: 20px; }
+    .left { width: 300px; flex-shrink: 0; }
+    .right { flex-grow: 1; overflow-x: auto; }
+
+    textarea { width: 100%; height: 200px; padding: 10px; border: 1px solid #ccc; border-radius: 6px; font-family: monospace; resize: vertical; box-sizing: border-box; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 13px; white-space: nowrap; }
+    th { background: #f1f3f4; padding: 10px; text-align: left; position: sticky; top: 0; z-index: 10; border-bottom: 2px solid #ddd; }
+    td { padding: 8px 10px; border-bottom: 1px solid #eee; }
+    tr.match-exact { background-color: #e8f0fe; }
+    tr:hover { background-color: #f8f9fa; }
+
+    .price { color: #d93025; font-weight: bold; }
+    .stock { color: #188038; font-size: 12px; }
+
+    .mmc-btn { background: #d32f2f; color: white; border: none; padding: 6px 12px; border-radius: 20px; font-size: 12px; cursor: pointer; }
+    .mmc-btn:hover { background: #b71c1c; }
+
+    .discount-cell { display: flex; align-items: center; gap: 4px; }
+    .discount-input { width: 70px; padding: 4px 6px; border: 1px solid #ccc; border-radius: 4px; font-size: 12px; }
+    .discount-suffix { color: #666; font-size: 12px; }
+
+    #toast { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); background: rgba(0,0,0,0.8); color: white; padding: 10px 20px; border-radius: 4px; display: none; z-index: 2000; }
+
+    @media (max-width: 768px) {
+      .main { flex-direction: column; }
+      .left { width: 100%; }
+      textarea { height: 100px; }
+      .group.stock-url { min-width: 100%; flex: 1 1 100%; }
+    }
+</style>
+</head>
+<body>
+<div id="toast">已复制</div>
+
+<div class="container">
+    <div class="header">
+        <h2>智能查价系统 v9</h2>
+        <div id="status" class="status-badge">等待数据...</div>
+    </div>
+    <div id="versions" class="versions">价格版本: - | 库存版本: -</div>
+
+    <div class="panel">
+        <div class="controls">
+            <div class="group"><label>折扣</label><input type="number" id="discount" value="0.53" step="0.01"></div>
+            <div class="group"><label>小数位</label><input type="number" id="decimals" value="1" step="1"></div>
+            <div class="group"><label>取整阈值</label><input type="number" id="threshold" value="100" step="1"></div>
+            <div class="group stock-url"><label>库存链接(可选)</label><input type="text" id="stockBundleUrl" placeholder="支持 stock.bundle.js / JSON / CSV / XLSX 直链"></div>
+            <button class="btn btn-stock" onclick="applyStockSource()">应用库存链接</button>
+            <button class="btn btn-search" onclick="doSearch()">智能匹配</button>
+            <button class="btn btn-copy" onclick="doCopy()">复制勾选</button>
+        </div>
+
+        <div class="copy-opts">
+            <label class="opt-lbl"><input type="checkbox" id="chk_code" checked>代码</label>
+            <label class="opt-lbl"><input type="checkbox" id="chk_spec" checked>规格</label>
+            <label class="opt-lbl"><input type="checkbox" id="chk_price" checked>含税价</label>
+            <label class="opt-lbl"><input type="checkbox" id="chk_special">特价信息</label>
+            <label class="opt-lbl"><input type="checkbox" id="chk_stock">库存信息</label>
+            <label class="opt-lbl" style="background:#fffbf0;border-color:#ffeeba"><input type="checkbox" id="chk_remark">补充说明</label>
+            <button class="mmc-btn" onclick="openMmcLogin()">三菱库存</button>
+        </div>
+    </div>
+
+    <div class="main">
+        <div class="left">
+            <textarea id="queryInput" placeholder="请输入规格型号...&#10;支持多关键词，例如：&#10;WNMG080408 UC5115"></textarea>
+        </div>
+        <div class="right">
+            <table>
+                <thead>
+                    <tr>
+                        <th width="30"><input type="checkbox" onchange="toggleAll(this)"></th>
+                        <th>规格型号</th>
+                        <th>面价</th>
+                        <th>折后价</th>
+                        <th>折扣</th>
+                        <th>代码</th>
+                        <th>库存</th>
+                        <th>备注</th>
+                    </tr>
+                </thead>
+                <tbody id="resultBody"></tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
+<script src="./lib/data-utils.js"></script>
+<script src="price.bundle.js"></script>
+<script src="stock.bundle.js"></script>
+<script>
+    let PRICE_DATA = { bySpec: {} };
+    let STOCK_DATA = { byCode: {} };
+    let DB = {};
+    let g_Results = [];
+
+    const STOCK_URL_KEY = "v9_stock_bundle_url";
+    const MMC_URL = "https://mcweb.mitsubishi-materials.com/concerto-mmsc-ec/login.jsp";
+    const MMC_PASSWORD = "%461971#";
+
+    window.onload = async function() {
+        const storedUrl = localStorage.getItem(STOCK_URL_KEY) || "";
+        document.getElementById("stockBundleUrl").value = storedUrl;
+
+        try {
+            await loadPriceBundle();
+            await loadStockBundle(storedUrl, { strictRemote: false });
+            rebuildMergedDB();
+            setStatus("数据已加载", "ok");
+        } catch (err) {
+            setStatus("数据加载失败", "error");
+            showToast(err.message || "加载失败");
+        }
+    };
+
+    function setStatus(msg, type) {
+        const el = document.getElementById('status');
+        el.innerText = msg;
+        el.className = 'status-badge ' + type;
+        if(type==='error') el.style.background = '#ffcdd2';
+        else el.style.background = "";
+    }
+
+    function bytesToUtf8(bytes) {
+        return new TextDecoder().decode(bytes);
+    }
+
+    function base64ToBytes(base64) {
+        const raw = atob(base64);
+        const out = new Uint8Array(raw.length);
+        for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+        return out;
+    }
+
+    function decodePlainPayload(payload) {
+        return bytesToUtf8(base64ToBytes(payload));
+    }
+
+    async function decryptData(base64Data, password) {
+        const encryptedData = base64ToBytes(base64Data);
+        const salt = encryptedData.slice(0, 16);
+        const iv = encryptedData.slice(16, 28);
+        const data = encryptedData.slice(28);
+
+        const enc = new TextEncoder();
+        const keyMaterial = await window.crypto.subtle.importKey(
+            "raw", enc.encode(password), {name: "PBKDF2"}, false, ["deriveKey"]
+        );
+        const key = await window.crypto.subtle.deriveKey(
+            { "name": "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
+            keyMaterial, { "name": "AES-GCM", "length": 256 }, false, ["decrypt"]
+        );
+
+        const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
+        return new TextDecoder().decode(decrypted);
+    }
+
+    function getUrlExt(url) {
+      const clean = (url || "").split("?")[0].toLowerCase();
+      const idx = clean.lastIndexOf(".");
+      if (idx < 0) return "";
+      return clean.slice(idx + 1);
+    }
+
+    function detectRemoteKind(url, contentType) {
+      const ext = getUrlExt(url);
+      const ct = (contentType || "").toLowerCase();
+      if (ct.includes("text/html") || ext === "html" || ext === "htm") return "html";
+      if (ext === "js" || ct.includes("javascript")) return "js";
+      if (ext === "json" || ct.includes("application/json")) return "json";
+      if (ext === "csv" || ct.includes("text/csv")) return "csv";
+      if (ext === "xlsx" || ext === "xls" || ct.includes("sheet") || ct.includes("excel")) return "xlsx";
+      return "unknown";
+    }
+
+    function parseCsvLine(line) {
+      const out = [];
+      let cur = "";
+      let quoted = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') {
+          if (quoted && line[i + 1] === '"') { cur += '"'; i++; }
+          else quoted = !quoted;
+        } else if (ch === ',' && !quoted) {
+          out.push(cur);
+          cur = "";
+        } else {
+          cur += ch;
+        }
+      }
+      out.push(cur);
+      return out;
+    }
+
+    function parseCsvRows(text) {
+      const raw = String(text || "").replace(/^\uFEFF/, "");
+      const lines = raw.split(/\r?\n/).filter(Boolean);
+      if (!lines.length) return [];
+      const headers = parseCsvLine(lines[0]).map(h => h.trim());
+      const rows = [];
+      for (let i = 1; i < lines.length; i++) {
+        const cols = parseCsvLine(lines[i]);
+        const row = {};
+        for (let j = 0; j < headers.length; j++) row[headers[j]] = (cols[j] || "").trim();
+        rows.push(row);
+      }
+      return rows;
+    }
+
+    async function loadPriceBundle() {
+        if (!window.PRICE_BUNDLE) throw new Error("未找到 price.bundle.js");
+
+        const bundle = window.PRICE_BUNDLE;
+        let jsonText = "";
+
+        if (bundle.secured) {
+            setStatus("价格包已加密，请输入密码", "lock");
+            const pwd = prompt("请输入价格包密码：");
+            if (!pwd) throw new Error("未输入价格包密码");
+            jsonText = await decryptData(bundle.payload, pwd);
+        } else {
+            jsonText = decodePlainPayload(bundle.payload);
+        }
+
+        const parsed = JSON.parse(jsonText || "{}");
+        PRICE_DATA = { bySpec: parsed.bySpec || {} };
+        updateVersionText(bundle.meta, null, "本地");
+    }
+
+    async function loadStockBundle(remoteUrl, options) {
+        const opts = options || {};
+        const strictRemote = !!opts.strictRemote;
+        let loadedFrom = "本地";
+
+        if (remoteUrl) {
+            try {
+                await loadRemoteStock(remoteUrl);
+                loadedFrom = "远程";
+            } catch (err) {
+                if (strictRemote) throw err;
+                showToast("远程库存加载失败，已回退本地");
+            }
+        }
+
+        if (!window.STOCK_BUNDLE) throw new Error("未找到 stock.bundle.js");
+
+        const stockObj = window.STOCK_BUNDLE;
+        if (stockObj.secured) throw new Error("库存包必须保持明文");
+
+        const text = decodePlainPayload(stockObj.payload || "");
+        const parsed = JSON.parse(text || "{}");
+        STOCK_DATA = { byCode: parsed.byCode || {} };
+        updateVersionText(window.PRICE_BUNDLE.meta, stockObj.meta, loadedFrom);
+        return loadedFrom;
+    }
+
+    function loadScript(url) {
+      return new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = url;
+        script.async = true;
+        script.onload = () => resolve();
+        script.onerror = () => reject(new Error("script load error"));
+        document.head.appendChild(script);
+      });
+    }
+
+    function toPlainStockBundle(byCode, versionText) {
+      const json = JSON.stringify({ byCode: byCode || {} });
+      const payload = btoa(unescape(encodeURIComponent(json)));
+      return {
+        secured: false,
+        payload: payload,
+        meta: {
+          version: versionText || new Date().toISOString(),
+          rowCount: Object.keys(byCode || {}).length,
+        }
+      };
+    }
+
+    async function loadRemoteStock(url) {
+        const tsUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+        const ext = getUrlExt(url);
+
+        if (ext === "js") {
+          await loadScript(tsUrl);
+          if (!window.STOCK_BUNDLE) throw new Error("远程 JS 未返回 STOCK_BUNDLE");
+          return;
+        }
+
+        const resp = await fetch(tsUrl, { cache: "no-store" });
+        if (!resp.ok) throw new Error("HTTP " + resp.status);
+
+        const contentType = resp.headers.get("content-type") || "";
+        const kind = detectRemoteKind(url, contentType);
+        if (kind === "html") throw new Error("库存链接是网页地址，不是可下载数据文件");
+
+        if (kind === "json") {
+          const data = await resp.json();
+          if (data && data.byCode) {
+            window.STOCK_BUNDLE = toPlainStockBundle(data.byCode, new Date().toISOString());
+            return;
+          }
+          throw new Error("JSON 缺少 byCode 字段");
+        }
+
+        if (kind === "csv") {
+          const text = await resp.text();
+          const rows = parseCsvRows(text);
+          const byCode = DataUtils.buildStockByCode(rows);
+          window.STOCK_BUNDLE = toPlainStockBundle(byCode, new Date().toISOString());
+          return;
+        }
+
+        if (kind === "xlsx") {
+          const ab = await resp.arrayBuffer();
+          const wb = XLSX.read(ab, { type: "array" });
+          const ws = wb.Sheets[wb.SheetNames[0]];
+          const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
+          const byCode = DataUtils.buildStockByCode(rows);
+          window.STOCK_BUNDLE = toPlainStockBundle(byCode, new Date().toISOString());
+          return;
+        }
+
+        throw new Error("库存链接类型不支持，请使用 stock.bundle.js/JSON/CSV/XLSX 直链");
+    }
+
+    function rebuildMergedDB() {
+        DB = {};
+        const bySpec = PRICE_DATA.bySpec || {};
+        const byCode = STOCK_DATA.byCode || {};
+
+        Object.keys(bySpec).forEach(spec => {
+            const item = bySpec[spec] || {};
+            const code = item.c || "";
+            DB[spec] = {
+                c: code,
+                p: Number(item.p) || 0,
+                s: item.s || "",
+                r: item.r || "",
+                b: item.b || "",
+                i: byCode[code] || ""
+            };
+        });
+    }
+
+    function updateVersionText(priceMeta, stockMeta, stockSource) {
+      const pVer = (priceMeta && priceMeta.version) ? priceMeta.version : "-";
+      const sVer = (stockMeta && stockMeta.version) ? stockMeta.version : "-";
+      const src = stockSource || "本地";
+      document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
+    }
+
+    async function applyStockSource() {
+      const url = (document.getElementById("stockBundleUrl").value || "").trim();
+      if (!url) {
+        localStorage.removeItem(STOCK_URL_KEY);
+        await loadStockBundle("", { strictRemote: false });
+        rebuildMergedDB();
+        setStatus("已切换到本地库存", "ok");
+        return;
+      }
+
+      localStorage.setItem(STOCK_URL_KEY, url);
+      try {
+        await loadStockBundle(url, { strictRemote: true });
+        rebuildMergedDB();
+        setStatus("远程库存已应用", "ok");
+      } catch (err) {
+        setStatus("库存链接应用失败", "error");
+        showToast(err.message || "库存链接失败");
+      }
+    }
+
+    function doSearch() {
+        const text = document.getElementById('queryInput').value;
+        const discount = parseFloat(document.getElementById('discount').value) || 1;
+        const decimals = parseInt(document.getElementById('decimals').value) || 0;
+        const threshold = parseFloat(document.getElementById('threshold').value) || 100;
+
+        const tbody = document.getElementById('resultBody');
+        tbody.innerHTML = '';
+        g_Results = [];
+
+        const lines = text.split(/\r?\n/).filter(l => l.trim());
+        const allKeys = Object.keys(DB);
+
+        lines.forEach(line => {
+            const keywords = line.trim().toUpperCase().split(/\s+/);
+            if (!keywords.length) return;
+
+            const matches = allKeys.filter(key => {
+                const item = DB[key];
+                const fullStr = (key + " " + item.c).toUpperCase();
+                return keywords.every(kw => fullStr.includes(kw));
+            });
+
+            matches.forEach(matchKey => {
+                const item = DB[matchKey];
+                const priceInfo = calcDiscountedPrice(item.p, discount, decimals, threshold);
+                const isExact = (matchKey.toUpperCase() === line.trim().toUpperCase());
+
+                const rowData = {
+                    id: g_Results.length,
+                    code: item.c,
+                    spec: matchKey,
+                    price: priceInfo.display,
+                    facePrice: item.p,
+                    remark: item.r,
+                    special: item.s,
+                    stock: item.i,
+                    discount: discount,
+                    checked: isExact
+                };
+                g_Results.push(rowData);
+
+                const tr = document.createElement('tr');
+                if(isExact) tr.className = 'match-exact';
+                tr.innerHTML = `
+                    <td><input type="checkbox" data-id="${rowData.id}" ${isExact?'checked':''}></td>
+                    <td>${matchKey}</td>
+                    <td>${item.p}</td>
+                    <td class="price">${priceInfo.display}</td>
+                    <td>
+                        <div class="discount-cell">
+                            <input class="discount-input" type="number" step="0.01" value="${(rowData.discount * 100).toFixed(2)}" data-id="${rowData.id}" oninput="onRowDiscountChange(this)">
+                            <span class="discount-suffix">%</span>
+                        </div>
+                    </td>
+                    <td>${item.c}</td>
+                    <td class="stock">${item.i || ""}</td>
+                    <td>${item.r || ""}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        });
+
+        if(g_Results.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:20px">没有找到匹配项</td></tr>';
+        }
+    }
+
+    function calcDiscountedPrice(facePrice, discount, decimals, threshold) {
+        const rawCalc = facePrice * discount;
+        const factor = Math.pow(10, decimals);
+        let finalPrice = Math.ceil(rawCalc * factor) / factor;
+        if(finalPrice > threshold) finalPrice = Math.ceil(rawCalc);
+        const display = (finalPrice % 1 === 0 && finalPrice > threshold)
+            ? finalPrice.toFixed(0) : finalPrice.toFixed(decimals);
+        return { value: finalPrice, display: display };
+    }
+
+    function onRowDiscountChange(input) {
+        const id = parseInt(input.getAttribute('data-id'), 10);
+        if(isNaN(id) || !g_Results[id]) return;
+
+        const decimals = parseInt(document.getElementById('decimals').value) || 0;
+        const threshold = parseFloat(document.getElementById('threshold').value) || 100;
+        let discountPercent = parseFloat(input.value);
+        if(isNaN(discountPercent)) discountPercent = 0;
+
+        const discount = discountPercent / 100;
+        const row = g_Results[id];
+        const priceInfo = calcDiscountedPrice(row.facePrice, discount, decimals, threshold);
+        row.discount = discount;
+        row.price = priceInfo.display;
+
+        const tr = input.closest('tr');
+        if(tr) {
+            const priceCell = tr.querySelector('.price');
+            if(priceCell) priceCell.textContent = priceInfo.display;
+        }
+    }
+
+    function doCopy() {
+        const checkboxes = document.querySelectorAll('#resultBody input[type=checkbox]');
+        checkboxes.forEach(cb => {
+            const id = cb.getAttribute('data-id');
+            if(g_Results[id]) g_Results[id].checked = cb.checked;
+        });
+
+        const selected = g_Results.filter(r => r.checked);
+        if(selected.length === 0) return showToast("请先勾选需要复制的行");
+
+        const showCode = document.getElementById('chk_code').checked;
+        const showSpec = document.getElementById('chk_spec').checked;
+        const showPrice = document.getElementById('chk_price').checked;
+        const showSpecial = document.getElementById('chk_special').checked;
+        const showStock = document.getElementById('chk_stock').checked;
+        const showRemark = document.getElementById('chk_remark').checked;
+
+        let text = "";
+        selected.forEach(res => {
+            const line1Parts = [];
+            if(showCode) line1Parts.push(res.code);
+            if(showSpec) line1Parts.push(res.spec);
+            if(showPrice) line1Parts.push("含税" + res.price);
+            if(showSpecial && res.special) line1Parts.push("特价:" + res.special);
+            if(showStock && res.stock) line1Parts.push(res.stock);
+
+            text += line1Parts.join(" ") + "\n";
+            if(showRemark && res.remark) text += "补充说明：" + res.remark + "\n";
+        });
+
+        copyToClipboard(text);
+    }
+
+    function toggleAll(source) {
+        const checkboxes = document.querySelectorAll('#resultBody input[type=checkbox]');
+        checkboxes.forEach(cb => cb.checked = source.checked);
+    }
+
+    function openMmcLogin() {
+        copyToClipboard(MMC_PASSWORD);
+        showToast("已复制密码");
+        window.open(MMC_URL);
+    }
+
+    function copyToClipboard(text) {
+        const el = document.createElement('textarea');
+        el.value = text;
+        el.style.position='fixed';
+        el.style.left='-9999px';
+        document.body.appendChild(el);
+        el.select();
+        try { document.execCommand('copy'); showToast("已复制"); } catch(e) {}
+        document.body.removeChild(el);
+    }
+
+    function showToast(msg) {
+        const t = document.getElementById('toast');
+        t.innerText = msg;
+        t.style.display='block';
+        setTimeout(() => t.style.display='none', 1500);
+    }
+</script>
+</body>
+</html>

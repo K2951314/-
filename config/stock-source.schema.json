@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://local/config/stock-source.schema.json",
+  "title": "Stock Source Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["stock_source_url", "allowed_content_types", "timeout_ms", "max_bytes"],
+  "properties": {
+    "stock_source_url": {
+      "type": "string",
+      "minLength": 0
+    },
+    "stock_source_token": {
+      "type": "string"
+    },
+    "allowed_content_types": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["csv", "json", "xlsx", "js"]
+      },
+      "uniqueItems": true
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1000,
+      "maximum": 60000
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 104857600
+    },
+    "allowed_domains": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    }
+  }
+}

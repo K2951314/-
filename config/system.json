@@ -1,0 +1,10 @@
+{
+  "app": {
+    "web_root": "apps/v9",
+    "price_bundle_path": "apps/v9/price.bundle.js",
+    "stock_bundle_path": "apps/v9/stock.bundle.js"
+  },
+  "sync": {
+    "script_path": "tools/sync_stock_bundle.mjs"
+  }
+}
