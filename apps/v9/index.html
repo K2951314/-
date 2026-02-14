@@ -17,7 +17,6 @@
     .panel { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 20px; border: 1px solid #e0e0e0; }
     .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
     .group { flex: 1; min-width: 120px; }
-    .group.stock-url { min-width: 280px; flex: 2; }
     label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 5px; color: #555; }
     input { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 14px; box-sizing: border-box; }
 
@@ -26,8 +25,6 @@
     .btn-search:hover { background: #1557b0; }
     .btn-copy { background: #f59e0b; }
     .btn-copy:hover { background: #d97706; }
-    .btn-stock { background: #0ea5e9; }
-    .btn-stock:hover { background: #0284c7; }
 
     .copy-opts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 15px; padding-top: 10px; border-top: 1px solid #eee; }
     .opt-lbl { background: white; border: 1px solid #ddd; padding: 4px 10px; border-radius: 20px; font-size: 12px; display: flex; align-items: center; cursor: pointer; user-select: none; }
@@ -62,7 +59,6 @@
       .main { flex-direction: column; }
       .left { width: 100%; }
       textarea { height: 100px; }
-      .group.stock-url { min-width: 100%; flex: 1 1 100%; }
     }
 </style>
 </head>
@@ -81,8 +77,6 @@
             <div class="group"><label>折扣</label><input type="number" id="discount" value="0.53" step="0.01"></div>
             <div class="group"><label>小数位</label><input type="number" id="decimals" value="1" step="1"></div>
             <div class="group"><label>取整阈值</label><input type="number" id="threshold" value="100" step="1"></div>
-            <div class="group stock-url"><label>库存链接(可选)</label><input type="text" id="stockBundleUrl" placeholder="支持 stock.bundle.js / JSON / CSV / XLSX 直链"></div>
-            <button class="btn btn-stock" onclick="applyStockSource()">应用库存链接</button>
             <button class="btn btn-search" onclick="doSearch()">智能匹配</button>
             <button class="btn btn-copy" onclick="doCopy()">复制勾选</button>
         </div>
@@ -122,8 +116,6 @@
     </div>
 </div>
 
-<script src="https://cdn.sheetjs.com/xlsx-0.20.2/package/dist/xlsx.full.min.js"></script>
-<script src="./lib/data-utils.js"></script>
 <script src="price.bundle.js"></script>
 <script src="stock.bundle.js"></script>
 <script>
@@ -132,17 +124,13 @@
     let DB = {};
     let g_Results = [];
 
-    const STOCK_URL_KEY = "v9_stock_bundle_url";
     const MMC_URL = "https://mcweb.mitsubishi-materials.com/concerto-mmsc-ec/login.jsp";
     const MMC_PASSWORD = "%461971#";
 
     window.onload = async function() {
-        const storedUrl = localStorage.getItem(STOCK_URL_KEY) || "";
-        document.getElementById("stockBundleUrl").value = storedUrl;
-
         try {
             await loadPriceBundle();
-            await loadStockBundle(storedUrl, { strictRemote: false });
+            await loadStockBundle();
             rebuildMergedDB();
             setStatus("数据已加载", "ok");
         } catch (err) {
@@ -193,59 +181,6 @@
         return new TextDecoder().decode(decrypted);
     }
 
-    function getUrlExt(url) {
-      const clean = (url || "").split("?")[0].toLowerCase();
-      const idx = clean.lastIndexOf(".");
-      if (idx < 0) return "";
-      return clean.slice(idx + 1);
-    }
-
-    function detectRemoteKind(url, contentType) {
-      const ext = getUrlExt(url);
-      const ct = (contentType || "").toLowerCase();
-      if (ct.includes("text/html") || ext === "html" || ext === "htm") return "html";
-      if (ext === "js" || ct.includes("javascript")) return "js";
-      if (ext === "json" || ct.includes("application/json")) return "json";
-      if (ext === "csv" || ct.includes("text/csv")) return "csv";
-      if (ext === "xlsx" || ext === "xls" || ct.includes("sheet") || ct.includes("excel")) return "xlsx";
-      return "unknown";
-    }
-
-    function parseCsvLine(line) {
-      const out = [];
-      let cur = "";
-      let quoted = false;
-      for (let i = 0; i < line.length; i++) {
-        const ch = line[i];
-        if (ch === '"') {
-          if (quoted && line[i + 1] === '"') { cur += '"'; i++; }
-          else quoted = !quoted;
-        } else if (ch === ',' && !quoted) {
-          out.push(cur);
-          cur = "";
-        } else {
-          cur += ch;
-        }
-      }
-      out.push(cur);
-      return out;
-    }
-
-    function parseCsvRows(text) {
-      const raw = String(text || "").replace(/^\uFEFF/, "");
-      const lines = raw.split(/\r?\n/).filter(Boolean);
-      if (!lines.length) return [];
-      const headers = parseCsvLine(lines[0]).map(h => h.trim());
-      const rows = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cols = parseCsvLine(lines[i]);
-        const row = {};
-        for (let j = 0; j < headers.length; j++) row[headers[j]] = (cols[j] || "").trim();
-        rows.push(row);
-      }
-      return rows;
-    }
-
     async function loadPriceBundle() {
         if (!window.PRICE_BUNDLE) throw new Error("未找到 price.bundle.js");
 
@@ -263,24 +198,10 @@
 
         const parsed = JSON.parse(jsonText || "{}");
         PRICE_DATA = { bySpec: parsed.bySpec || {} };
-        updateVersionText(bundle.meta, null, "本地");
+        updateVersionText(bundle.meta, null);
     }
 
-    async function loadStockBundle(remoteUrl, options) {
-        const opts = options || {};
-        const strictRemote = !!opts.strictRemote;
-        let loadedFrom = "本地";
-
-        if (remoteUrl) {
-            try {
-                await loadRemoteStock(remoteUrl);
-                loadedFrom = "远程";
-            } catch (err) {
-                if (strictRemote) throw err;
-                showToast("远程库存加载失败，已回退本地");
-            }
-        }
-
+    async function loadStockBundle() {
         if (!window.STOCK_BUNDLE) throw new Error("未找到 stock.bundle.js");
 
         const stockObj = window.STOCK_BUNDLE;
@@ -289,79 +210,7 @@
         const text = decodePlainPayload(stockObj.payload || "");
         const parsed = JSON.parse(text || "{}");
         STOCK_DATA = { byCode: parsed.byCode || {} };
-        updateVersionText(window.PRICE_BUNDLE.meta, stockObj.meta, loadedFrom);
-        return loadedFrom;
-    }
-
-    function loadScript(url) {
-      return new Promise((resolve, reject) => {
-        const script = document.createElement("script");
-        script.src = url;
-        script.async = true;
-        script.onload = () => resolve();
-        script.onerror = () => reject(new Error("script load error"));
-        document.head.appendChild(script);
-      });
-    }
-
-    function toPlainStockBundle(byCode, versionText) {
-      const json = JSON.stringify({ byCode: byCode || {} });
-      const payload = btoa(unescape(encodeURIComponent(json)));
-      return {
-        secured: false,
-        payload: payload,
-        meta: {
-          version: versionText || new Date().toISOString(),
-          rowCount: Object.keys(byCode || {}).length,
-        }
-      };
-    }
-
-    async function loadRemoteStock(url) {
-        const tsUrl = url + (url.includes("?") ? "&" : "?") + "t=" + Date.now();
-        const ext = getUrlExt(url);
-
-        if (ext === "js") {
-          await loadScript(tsUrl);
-          if (!window.STOCK_BUNDLE) throw new Error("远程 JS 未返回 STOCK_BUNDLE");
-          return;
-        }
-
-        const resp = await fetch(tsUrl, { cache: "no-store" });
-        if (!resp.ok) throw new Error("HTTP " + resp.status);
-
-        const contentType = resp.headers.get("content-type") || "";
-        const kind = detectRemoteKind(url, contentType);
-        if (kind === "html") throw new Error("库存链接是网页地址，不是可下载数据文件");
-
-        if (kind === "json") {
-          const data = await resp.json();
-          if (data && data.byCode) {
-            window.STOCK_BUNDLE = toPlainStockBundle(data.byCode, new Date().toISOString());
-            return;
-          }
-          throw new Error("JSON 缺少 byCode 字段");
-        }
-
-        if (kind === "csv") {
-          const text = await resp.text();
-          const rows = parseCsvRows(text);
-          const byCode = DataUtils.buildStockByCode(rows);
-          window.STOCK_BUNDLE = toPlainStockBundle(byCode, new Date().toISOString());
-          return;
-        }
-
-        if (kind === "xlsx") {
-          const ab = await resp.arrayBuffer();
-          const wb = XLSX.read(ab, { type: "array" });
-          const ws = wb.Sheets[wb.SheetNames[0]];
-          const rows = XLSX.utils.sheet_to_json(ws, { defval: "" });
-          const byCode = DataUtils.buildStockByCode(rows);
-          window.STOCK_BUNDLE = toPlainStockBundle(byCode, new Date().toISOString());
-          return;
-        }
-
-        throw new Error("库存链接类型不支持，请使用 stock.bundle.js/JSON/CSV/XLSX 直链");
+        updateVersionText(window.PRICE_BUNDLE.meta, stockObj.meta);
     }
 
     function rebuildMergedDB() {
@@ -383,32 +232,11 @@
         });
     }
 
-    function updateVersionText(priceMeta, stockMeta, stockSource) {
+    function updateVersionText(priceMeta, stockMeta) {
       const pVer = (priceMeta && priceMeta.version) ? priceMeta.version : "-";
       const sVer = (stockMeta && stockMeta.version) ? stockMeta.version : "-";
-      const src = stockSource || "本地";
+      const src = "本地(自动同步)";
       document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
-    }
-
-    async function applyStockSource() {
-      const url = (document.getElementById("stockBundleUrl").value || "").trim();
-      if (!url) {
-        localStorage.removeItem(STOCK_URL_KEY);
-        await loadStockBundle("", { strictRemote: false });
-        rebuildMergedDB();
-        setStatus("已切换到本地库存", "ok");
-        return;
-      }
-
-      localStorage.setItem(STOCK_URL_KEY, url);
-      try {
-        await loadStockBundle(url, { strictRemote: true });
-        rebuildMergedDB();
-        setStatus("远程库存已应用", "ok");
-      } catch (err) {
-        setStatus("库存链接应用失败", "error");
-        showToast(err.message || "库存链接失败");
-      }
     }
 
     function doSearch() {

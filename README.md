@@ -35,10 +35,13 @@ Supported source kinds:
 Unsupported source kinds:
 - `text/html` page links (document preview/share page)
 
-Quick check on Windows:
+Confirm the link is a downloadable file/API (not a page):
 ```powershell
-curl.exe -I -L "https://your-stock-source"
+curl.exe -L -o NUL -w "http:%{http_code} type:%{content_type}`n" "在线表格链接"
 ```
+Expected:
+- `http:200`
+- `type` is not `text/html`
 
 ## Commands
 Install:
@@ -70,6 +73,11 @@ npm run doctor
 
 If you drag-and-drop manually, drag `apps/v9` only.
 
+## Frontend Stock Loading Policy
+- Production query UI reads inventory only from local `apps/v9/stock.bundle.js`.
+- Manual stock URL override in frontend has been removed by design.
+- Reason: avoid CORS/auth/HTML-link misuse and keep a single stable update path.
+
 ## GitHub Actions
 - `.github/workflows/sync-stock.yml`: scheduled stock sync
 - `.github/workflows/ci.yml`: PR/push test gate
@@ -95,5 +103,5 @@ Also recommended:
 - Inventory key is `code` (`byCode`).
 - Price bundle can remain encrypted.
 - Stock bundle remains plain text for high-frequency updates.
+- Stock updates must go through GitHub Actions (`sync-stock.yml`) and Netlify auto deploy.
 - When `price.bundle.js` is encrypted (`secured: true`), first visit requires password input.
-- Query app depends on local `apps/v9/lib/data-utils.js` (do not remove).

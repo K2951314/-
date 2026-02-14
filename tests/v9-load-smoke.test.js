@@ -4,17 +4,15 @@ const path = require("path");
 
 function run() {
   const html = fs.readFileSync(path.join(process.cwd(), "apps/v9/index.html"), "utf8");
-  assert.ok(html.includes('src="./lib/data-utils.js"'), "v9 index should load local shared utils");
   assert.ok(html.includes('src="price.bundle.js"'), "v9 index should load price bundle");
   assert.ok(html.includes('src="stock.bundle.js"'), "v9 index should load stock bundle");
   assert.ok(
-    fs.existsSync(path.join(process.cwd(), "apps/v9/lib/data-utils.js")),
-    "v9 local shared utils file should exist"
+    !html.includes("data-utils.js"),
+    "v9 index should not depend on data-utils.js after local-stock-only simplification"
   );
-  assert.ok(
-    !html.includes("../../merger/lib/data-utils.js"),
-    "cross-directory shared path should be removed for Netlify publish"
-  );
+  assert.ok(!html.includes('id="stockBundleUrl"'), "v9 index should not expose stock URL input");
+  assert.ok(!html.includes("applyStockSource"), "v9 index should not expose remote stock apply action");
+  assert.ok(!html.includes("loadRemoteStock"), "v9 index should not include remote stock loader");
 }
 
 try {
