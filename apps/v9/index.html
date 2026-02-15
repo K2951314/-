@@ -118,7 +118,6 @@
 
 <script src="runtime-config.js"></script>
 <script src="price.bundle.js"></script>
-<script src="stock.bundle.js"></script>
 <script>
     let PRICE_DATA = { bySpec: {} };
     let STOCK_DATA = { byCode: {} };
@@ -134,7 +133,6 @@
             await loadStockBundle();
             rebuildMergedDB();
             setStatus("数据已加载", "ok");
-            await tryLoadRemoteStockBundle();
         } catch (err) {
             setStatus("数据加载失败", "error");
             showToast(err.message || "加载失败");
@@ -203,12 +201,6 @@
         updateVersionText(bundle.meta, null, "本地(自动同步)");
     }
 
-    async function loadStockBundle() {
-        const local = parseStockBundle(window.STOCK_BUNDLE);
-        STOCK_DATA = { byCode: local.byCode };
-        updateVersionText(window.PRICE_BUNDLE.meta, local.meta, "本地(自动同步)");
-    }
-
     function parseStockBundle(stockObj) {
         if (!stockObj) throw new Error("未找到 stock.bundle.js");
         if (stockObj.secured) throw new Error("库存包必须保持明文");
@@ -273,29 +265,36 @@
       });
     }
 
-    async function tryLoadRemoteStockBundle() {
-      const cfg = getRemoteStockConfig();
-      if (!cfg.enabled || !cfg.url) return false;
-
-      const localBundle = window.STOCK_BUNDLE;
-      const localParsed = parseStockBundle(localBundle);
-
+    async function loadStockBundleByScript(url, timeoutMs) {
+      const previous = window.STOCK_BUNDLE;
       try {
-        const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
-        const remoteBundle = await loadRemoteStockScript(remoteUrl, cfg.timeoutMs);
-        const remoteParsed = parseStockBundle(remoteBundle);
-        STOCK_DATA = { byCode: remoteParsed.byCode };
-        rebuildMergedDB();
-        updateVersionText(window.PRICE_BUNDLE.meta, remoteParsed.meta, "远程(stock-data)");
-        return true;
+        delete window.STOCK_BUNDLE;
+        const bundle = await loadRemoteStockScript(url, timeoutMs);
+        return parseStockBundle(bundle);
       } catch (err) {
-        window.STOCK_BUNDLE = localBundle;
-        STOCK_DATA = { byCode: localParsed.byCode };
-        rebuildMergedDB();
-        updateVersionText(window.PRICE_BUNDLE.meta, localParsed.meta, "本地(回退)");
-        showToast("远程库存失败，已回退本地");
-        return false;
+        window.STOCK_BUNDLE = previous;
+        throw err;
       }
+    }
+
+    async function loadStockBundle() {
+      const cfg = getRemoteStockConfig();
+      if (cfg.enabled && cfg.url) {
+        try {
+          const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
+          const remote = await loadStockBundleByScript(remoteUrl, cfg.timeoutMs);
+          STOCK_DATA = { byCode: remote.byCode };
+          updateVersionText(window.PRICE_BUNDLE.meta, remote.meta, "远程(stock-data)");
+          return;
+        } catch (err) {
+          showToast("远程库存失败，已回退本地");
+        }
+      }
+
+      const local = await loadStockBundleByScript("stock.bundle.js", 8000);
+      STOCK_DATA = { byCode: local.byCode };
+      const source = (cfg.enabled && cfg.url) ? "本地(回退)" : "本地(自动同步)";
+      updateVersionText(window.PRICE_BUNDLE.meta, local.meta, source);
     }
 
     function rebuildMergedDB() {

@@ -245,6 +245,9 @@ async function readExistingBundleInfo(outputPath) {
       byCode,
       dataHash: hashByCode(byCode),
       generatedAt: bundle.meta && bundle.meta.generated_at ? String(bundle.meta.generated_at) : "",
+      sourceEtag: bundle.meta && bundle.meta.source_etag ? String(bundle.meta.source_etag) : "",
+      sourceLastModified:
+        bundle.meta && bundle.meta.source_last_modified ? String(bundle.meta.source_last_modified) : "",
     };
   } catch (err) {
     if (err && err.code === "ENOENT") return null;
@@ -325,13 +328,16 @@ async function parseSourceToByCode(kind, body) {
   throw new Error(`Unsupported stock source type: ${kind}`);
 }
 
-function buildStockBundleScript(byCode, sourceUrl, dataHash) {
+function buildStockBundleScript(byCode, sourceUrl, dataHash, sourceMeta) {
+  const meta = sourceMeta || {};
   const bundle = BundleUtils.encodeStockBundle(byCode || {});
   bundle.meta = {
     ...bundle.meta,
     source: sourceUrl,
     generated_at: new Date().toISOString(),
     data_hash: dataHash,
+    source_etag: meta.etag || "",
+    source_last_modified: meta.lastModified || "",
   };
   return {
     bundle,
@@ -374,12 +380,16 @@ export async function syncStockBundle(options) {
   const allowedKinds = runtime.stockConfig.allowed_content_types.map((x) => String(x).toLowerCase());
   const timeoutMs = Number(runtime.stockConfig.timeout_ms);
   const maxBytes = Number(runtime.stockConfig.max_bytes);
+  const outputPath = opts.outputPath || runtime.outputPath;
+  const existing = await readExistingBundleInfo(outputPath);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  const requestUrl = `${sourceUrl}${sourceUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
+  const requestUrl = sourceUrl;
   const headers = {};
   if (token) headers.Authorization = `Bearer ${token}`;
+  if (existing && existing.sourceEtag) headers["If-None-Match"] = existing.sourceEtag;
+  if (existing && existing.sourceLastModified) headers["If-Modified-Since"] = existing.sourceLastModified;
 
   let response;
   try {
@@ -398,19 +408,31 @@ export async function syncStockBundle(options) {
     clearTimeout(timer);
   }
 
+  if (response.status === 304 && existing) {
+    return {
+      outputPath,
+      kind: "not_modified",
+      contentType: String(response.headers.get("content-type") || ""),
+      rowCount: Object.keys(existing.byCode || {}).length,
+      source: sourceUrl,
+      generatedAt: existing.generatedAt || "",
+      changed: false,
+      dataHash: existing.dataHash,
+    };
+  }
+
   if (!response.ok) throw new Error(`Source request failed: HTTP ${response.status}`);
   ensureMaxBytes(response.headers.get("content-length"), maxBytes);
 
   const contentType = String(response.headers.get("content-type") || "");
+  const responseEtag = String(response.headers.get("etag") || "");
+  const responseLastModified = String(response.headers.get("last-modified") || "");
   const kind = detectSourceKind(sourceUrl, contentType);
   assertSupportedSourceKind(kind, allowedKinds);
 
   const body = await readResponseBodyByKind(response, kind, maxBytes);
   const byCode = await parseSourceToByCode(kind, body);
   const dataHash = hashByCode(byCode);
-
-  const outputPath = opts.outputPath || runtime.outputPath;
-  const existing = await readExistingBundleInfo(outputPath);
   if (existing && existing.dataHash === dataHash) {
     return {
       outputPath,
@@ -424,7 +446,10 @@ export async function syncStockBundle(options) {
     };
   }
 
-  const built = buildStockBundleScript(byCode, sourceUrl, dataHash);
+  const built = buildStockBundleScript(byCode, sourceUrl, dataHash, {
+    etag: responseEtag,
+    lastModified: responseLastModified,
+  });
   await mkdir(path.dirname(outputPath), { recursive: true });
   await writeFile(outputPath, built.script, "utf8");
 

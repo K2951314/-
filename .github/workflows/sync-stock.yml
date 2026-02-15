@@ -2,7 +2,7 @@ name: Sync Stock Bundle
 
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 16 * * *"
   workflow_dispatch:
 
 permissions:
@@ -34,6 +34,18 @@ jobs:
           if [ -z "${{ secrets.STOCK_SOURCE_URL }}" ]; then
             echo "STOCK_SOURCE_URL is not set"
             exit 1
+          fi
+
+      - name: Seed previous stock artifact (for conditional request)
+        run: |
+          TARGET=$(node -e "const c=require('./config/system.json'); process.stdout.write(c.app.stock_bundle_path)")
+          mkdir -p tmp
+          git fetch origin "$STOCK_BRANCH" || true
+          if git show "origin/$STOCK_BRANCH:$TARGET" >/dev/null 2>&1; then
+            git show "origin/$STOCK_BRANCH:$TARGET" > tmp/stock.bundle.js
+            echo "Seeded previous stock artifact from $STOCK_BRANCH"
+          else
+            echo "No previous stock artifact found on $STOCK_BRANCH"
           fi
 
       - name: Build stock bundle artifact

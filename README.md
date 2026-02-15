@@ -4,7 +4,7 @@
 This repository uses a split-bundle architecture:
 - `apps/v9/price.bundle.js`: low-frequency price bundle
 - `apps/v9/stock.bundle.js`: local fallback stock bundle
-- `apps/v9/runtime-config.js`: remote stock runtime config (optional switch)
+- `apps/v9/runtime-config.js`: remote stock runtime config
 
 Stock is synchronized from an external source via GitHub Actions.
 Netlify publish root is `apps/v9`.
@@ -76,9 +76,8 @@ If you drag-and-drop manually, drag `apps/v9` only.
 
 ## Frontend Stock Loading Policy
 - Manual stock URL override UI is removed.
-- Query page always loads local `apps/v9/stock.bundle.js` as fallback.
-- Query page can optionally load remote `stock.bundle.js` from `apps/v9/runtime-config.js`.
-- If remote load fails, UI falls back to local stock and continues working.
+- Query page tries remote `stock.bundle.js` from `apps/v9/runtime-config.js` first.
+- If remote load fails, UI falls back to local `apps/v9/stock.bundle.js`.
 
 ## GitHub Actions
 - `.github/workflows/sync-stock.yml`: scheduled stock sync
@@ -88,13 +87,29 @@ If you drag-and-drop manually, drag `apps/v9` only.
 1. Loads path contract from `config/system.json`
 2. Pulls source from secrets
 3. Validates source kind and bounds
-4. Builds temporary stock bundle artifact (`tmp/stock.bundle.js`)
-5. Publishes only `apps/v9/stock.bundle.js` to branch `stock-data`
-6. Commits only when file content changed
+4. Seeds previous artifact from `stock-data` branch (for conditional request)
+5. Builds temporary stock bundle artifact (`tmp/stock.bundle.js`)
+6. Publishes only `apps/v9/stock.bundle.js` to branch `stock-data`
+7. Commits only when file content changed
 
 Local sync script behavior:
 - `tools/sync_stock_bundle.mjs` is idempotent.
 - If `byCode` hash is unchanged, it skips write and returns `changed=false`.
+- When source supports ETag/Last-Modified, script sends conditional headers.
+
+## Sync Frequency (How to Change Later)
+Edit `.github/workflows/sync-stock.yml`:
+```yaml
+on:
+  schedule:
+    - cron: "0 * * * *"
+```
+
+Common examples (GitHub Actions cron uses UTC):
+- Every hour: `0 * * * *`
+- Every 6 hours: `0 */6 * * *`
+- Every 12 hours: `0 */12 * * *`
+- Daily at 00:00 UTC: `0 0 * * *`
 
 ## Security Baseline (Recommended)
 For static hosting, configure:
