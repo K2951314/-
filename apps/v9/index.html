@@ -123,21 +123,39 @@
     let STOCK_DATA = { byCode: {} };
     let DB = {};
     let g_Results = [];
+    let dataLoaded = false;
+    let dataLoadPromise = null;
 
     const MMC_URL = "https://mcweb.mitsubishi-materials.com/concerto-mmsc-ec/login.jsp";
     const MMC_PASSWORD = "%461971#";
 
-    window.onload = async function() {
-        try {
-            await loadPriceBundle();
-            await loadStockBundle();
-            rebuildMergedDB();
-            setStatus("数据已加载", "ok");
-        } catch (err) {
-            setStatus("数据加载失败", "error");
-            showToast(err.message || "加载失败");
-        }
+    window.onload = function() {
+        setStatus("等待查询后加载数据", "idle");
+        updateVersionText(null, null, "待加载");
     };
+
+    async function ensureDataLoaded() {
+        if (dataLoaded) return;
+        if (dataLoadPromise) return dataLoadPromise;
+
+        setStatus("首次查询正在加载数据...", "lock");
+        dataLoadPromise = (async () => {
+            try {
+                await loadPriceBundle();
+                await loadStockBundle();
+                rebuildMergedDB();
+                dataLoaded = true;
+                setStatus("数据已加载", "ok");
+            } catch (err) {
+                setStatus("数据加载失败", "error");
+                throw err;
+            } finally {
+                if (!dataLoaded) dataLoadPromise = null;
+            }
+        })();
+
+        return dataLoadPromise;
+    }
 
     function setStatus(msg, type) {
         const el = document.getElementById('status');
@@ -323,7 +341,14 @@
       document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
     }
 
-    function doSearch() {
+    async function doSearch() {
+        try {
+            await ensureDataLoaded();
+        } catch (err) {
+            showToast(err.message || "加载失败");
+            return;
+        }
+
         const text = document.getElementById('queryInput').value;
         const discount = parseFloat(document.getElementById('discount').value) || 1;
         const decimals = parseInt(document.getElementById('decimals').value) || 0;
