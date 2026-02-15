@@ -117,7 +117,6 @@
 </div>
 
 <script src="runtime-config.js"></script>
-<script src="price.bundle.js"></script>
 <script>
     let PRICE_DATA = { bySpec: {} };
     let STOCK_DATA = { byCode: {} };
@@ -181,24 +180,33 @@
         return new TextDecoder().decode(decrypted);
     }
 
-    async function loadPriceBundle() {
-        if (!window.PRICE_BUNDLE) throw new Error("未找到 price.bundle.js");
+    function getRemotePriceConfig() {
+      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remotePrice) || {};
+      return {
+        enabled: !!cfg.enabled,
+        url: String(cfg.url || "").trim(),
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
+        cacheBust: String(cfg.cacheBust || "hourly")
+      };
+    }
 
-        const bundle = window.PRICE_BUNDLE;
+    function parsePriceBundle(priceObj) {
+        if (!priceObj) throw new Error("未找到 price.bundle.js");
         let jsonText = "";
 
-        if (bundle.secured) {
+        if (priceObj.secured) {
             setStatus("价格包已加密，请输入密码", "lock");
             const pwd = prompt("请输入价格包密码：");
             if (!pwd) throw new Error("未输入价格包密码");
-            jsonText = await decryptData(bundle.payload, pwd);
-        } else {
-            jsonText = decodePlainPayload(bundle.payload);
+            return decryptData(priceObj.payload, pwd).then((text) => {
+              const parsed = JSON.parse(text || "{}");
+              return { bySpec: parsed.bySpec || {}, meta: priceObj.meta || null };
+            });
         }
 
+        jsonText = decodePlainPayload(priceObj.payload || "");
         const parsed = JSON.parse(jsonText || "{}");
-        PRICE_DATA = { bySpec: parsed.bySpec || {} };
-        updateVersionText(bundle.meta, null, "本地(自动同步)");
+        return Promise.resolve({ bySpec: parsed.bySpec || {}, meta: priceObj.meta || null });
     }
 
     function parseStockBundle(stockObj) {
@@ -235,7 +243,7 @@
       return url + sep + "v=" + encodeURIComponent(key);
     }
 
-    function loadRemoteStockScript(url, timeoutMs) {
+    function loadBundleScript(url, timeoutMs, globalKey, timeoutMsg, errorMsg) {
       return new Promise((resolve, reject) => {
         const script = document.createElement("script");
         let done = false;
@@ -243,7 +251,7 @@
           if (done) return;
           done = true;
           script.remove();
-          reject(new Error("远程库存加载超时"));
+          reject(new Error(timeoutMsg));
         }, timeoutMs);
 
         script.src = url;
@@ -252,14 +260,14 @@
           if (done) return;
           done = true;
           clearTimeout(timer);
-          resolve(window.STOCK_BUNDLE);
+          resolve(window[globalKey]);
         };
         script.onerror = () => {
           if (done) return;
           done = true;
           clearTimeout(timer);
           script.remove();
-          reject(new Error("远程库存脚本加载失败"));
+          reject(new Error(errorMsg));
         };
         document.head.appendChild(script);
       });
@@ -269,12 +277,44 @@
       const previous = window.STOCK_BUNDLE;
       try {
         delete window.STOCK_BUNDLE;
-        const bundle = await loadRemoteStockScript(url, timeoutMs);
+        const bundle = await loadBundleScript(url, timeoutMs, "STOCK_BUNDLE", "远程库存加载超时", "远程库存脚本加载失败");
         return parseStockBundle(bundle);
       } catch (err) {
         window.STOCK_BUNDLE = previous;
         throw err;
       }
+    }
+
+    async function loadPriceBundleByScript(url, timeoutMs) {
+      const previous = window.PRICE_BUNDLE;
+      try {
+        delete window.PRICE_BUNDLE;
+        const bundle = await loadBundleScript(url, timeoutMs, "PRICE_BUNDLE", "远程价格加载超时", "远程价格脚本加载失败");
+        return parsePriceBundle(bundle);
+      } catch (err) {
+        window.PRICE_BUNDLE = previous;
+        throw err;
+      }
+    }
+
+    async function loadPriceBundle() {
+      const cfg = getRemotePriceConfig();
+      if (cfg.enabled && cfg.url) {
+        try {
+          const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
+          const remote = await loadPriceBundleByScript(remoteUrl, cfg.timeoutMs);
+          PRICE_DATA = { bySpec: remote.bySpec };
+          updateVersionText(remote.meta, null, "远程(price-data)");
+          return;
+        } catch (err) {
+          showToast("远程价格失败，已回退本地");
+        }
+      }
+
+      const local = await loadPriceBundleByScript("price.bundle.js", 8000);
+      PRICE_DATA = { bySpec: local.bySpec };
+      const source = (cfg.enabled && cfg.url) ? "本地(回退)" : "本地(自动同步)";
+      updateVersionText(local.meta, null, source);
     }
 
     async function loadStockBundle() {
@@ -284,7 +324,7 @@
           const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
           const remote = await loadStockBundleByScript(remoteUrl, cfg.timeoutMs);
           STOCK_DATA = { byCode: remote.byCode };
-          updateVersionText(window.PRICE_BUNDLE.meta, remote.meta, "远程(stock-data)");
+          updateVersionText((window.PRICE_BUNDLE && window.PRICE_BUNDLE.meta) || null, remote.meta, "远程(stock-data)");
           return;
         } catch (err) {
           showToast("远程库存失败，已回退本地");
@@ -294,7 +334,7 @@
       const local = await loadStockBundleByScript("stock.bundle.js", 8000);
       STOCK_DATA = { byCode: local.byCode };
       const source = (cfg.enabled && cfg.url) ? "本地(回退)" : "本地(自动同步)";
-      updateVersionText(window.PRICE_BUNDLE.meta, local.meta, source);
+      updateVersionText((window.PRICE_BUNDLE && window.PRICE_BUNDLE.meta) || null, local.meta, source);
     }
 
     function rebuildMergedDB() {

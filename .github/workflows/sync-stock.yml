@@ -17,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       STOCK_BRANCH: stock-data
+      PRICE_BRANCH: price-data
     steps:
       - name: Checkout
         uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
@@ -102,5 +103,53 @@ jobs:
           fi
           git commit -m "chore: auto-sync stock bundle"
           git push origin HEAD:"$STOCK_BRANCH"
+          cd - >/dev/null
+          git worktree remove "$WORKTREE_DIR" --force
+
+      - name: Publish price bundle to price-data branch
+        run: |
+          TARGET=$(node -e "const c=require('./config/system.json'); process.stdout.write(c.app.price_bundle_path)")
+          ARTIFACT="$TARGET"
+          if [ ! -f "$ARTIFACT" ]; then
+            echo "Price artifact not found: $ARTIFACT"
+            exit 1
+          fi
+
+          git fetch origin "$PRICE_BRANCH" || true
+          WORKTREE_DIR=$(mktemp -d)
+          BRANCH_EXISTS=0
+          if git show-ref --verify --quiet "refs/remotes/origin/$PRICE_BRANCH"; then
+            BRANCH_EXISTS=1
+            git worktree add -B "$PRICE_BRANCH" "$WORKTREE_DIR" "origin/$PRICE_BRANCH"
+          else
+            git worktree add -B "$PRICE_BRANCH" "$WORKTREE_DIR"
+          fi
+
+          mkdir -p "$WORKTREE_DIR/$(dirname "$TARGET")"
+          if [ -f "$WORKTREE_DIR/$TARGET" ] && cmp -s "$ARTIFACT" "$WORKTREE_DIR/$TARGET"; then
+            echo "No price bundle changes"
+            if [ "$BRANCH_EXISTS" = "0" ]; then
+              cd "$WORKTREE_DIR"
+              git push origin HEAD:"$PRICE_BRANCH"
+              cd - >/dev/null
+            fi
+            git worktree remove "$WORKTREE_DIR" --force
+            exit 0
+          fi
+
+          cp "$ARTIFACT" "$WORKTREE_DIR/$TARGET"
+          cd "$WORKTREE_DIR"
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$TARGET"
+          if git diff --cached --quiet; then
+            echo "No staged changes"
+            cd - >/dev/null
+            git worktree remove "$WORKTREE_DIR" --force
+            exit 0
+          fi
+          git commit -m "chore: auto-sync price bundle"
+          git push origin HEAD:"$PRICE_BRANCH"
           cd - >/dev/null
           git worktree remove "$WORKTREE_DIR" --force
