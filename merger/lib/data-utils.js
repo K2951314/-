@@ -159,10 +159,60 @@
         p: parseMoney(row["销售单价"]),
         s: toStringSafe(row["特价"]),
         r: toStringSafe(row["补充说明"]),
-        b: toStringSafe(row.brand),
       };
     }
     return { bySpec: bySpec };
+  }
+
+  function buildPriceDatasetWithDictionary(rows) {
+    var dataset = buildPriceDataset(rows);
+    var bySpec = dataset.bySpec || {};
+    var strings = [];
+    var indexByValue = {};
+
+    function addDictValue(text) {
+      var key = toStringSafe(text);
+      if (!key) return -1;
+      if (Object.prototype.hasOwnProperty.call(indexByValue, key)) {
+        return indexByValue[key];
+      }
+      var index = strings.length;
+      strings.push(key);
+      indexByValue[key] = index;
+      return index;
+    }
+
+    var compactBySpec = {};
+    var specs = Object.keys(bySpec);
+    for (var i = 0; i < specs.length; i++) {
+      var spec = specs[i];
+      var item = bySpec[spec] || {};
+      compactBySpec[spec] = [
+        toStringSafe(item.c),
+        Number(item.p) || 0,
+        addDictValue(item.s),
+        addDictValue(item.r),
+      ];
+    }
+
+    return {
+      bySpec: compactBySpec,
+      strings: strings,
+    };
+  }
+
+  function splitPriceRowsByBrand(rows, fallbackBrand) {
+    var normalized = normalizePriceRows(rows);
+    var grouped = {};
+    var fallback = toStringSafe(fallbackBrand) || "UNMAPPED";
+
+    for (var i = 0; i < normalized.length; i++) {
+      var row = normalized[i] || {};
+      var brand = toStringSafe(row.brand) || fallback;
+      if (!grouped[brand]) grouped[brand] = [];
+      grouped[brand].push(row);
+    }
+    return grouped;
   }
 
   function resolveColumn(columns, aliases) {
@@ -237,7 +287,6 @@
         p: Number(item.p) || 0,
         s: toStringSafe(item.s),
         r: toStringSafe(item.r),
-        b: toStringSafe(item.b),
         i: stockMap[code] || "",
       };
     }
@@ -276,6 +325,8 @@
     splitPriceFilesByBrand: splitPriceFilesByBrand,
     mergePriceTables: mergePriceTables,
     buildPriceDataset: buildPriceDataset,
+    buildPriceDatasetWithDictionary: buildPriceDatasetWithDictionary,
+    splitPriceRowsByBrand: splitPriceRowsByBrand,
     buildStockByCode: buildStockByCode,
     joinPriceStock: joinPriceStock,
     bytesToBase64: bytesToBase64,

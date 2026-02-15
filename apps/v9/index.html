@@ -117,12 +117,12 @@
 </div>
 
 <script src="runtime-config.js"></script>
-<script src="price.bundle.js"></script>
 <script>
-    let PRICE_DATA = { bySpec: {} };
+    let PRICE_DATA = { bySpec: {}, strings: [] };
     let STOCK_DATA = { byCode: {} };
     let DB = {};
     let g_Results = [];
+    let LOADED_PRICE_SHARDS = {};
 
     const MMC_URL = "https://mcweb.mitsubishi-materials.com/concerto-mmsc-ec/login.jsp";
     const MMC_PASSWORD = "%461971#";
@@ -147,95 +147,76 @@
         else el.style.background = "";
     }
 
-    function bytesToUtf8(bytes) {
-        return new TextDecoder().decode(bytes);
-    }
-
+    function bytesToUtf8(bytes) { return new TextDecoder().decode(bytes); }
     function base64ToBytes(base64) {
         const raw = atob(base64);
         const out = new Uint8Array(raw.length);
         for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
         return out;
     }
-
-    function decodePlainPayload(payload) {
-        return bytesToUtf8(base64ToBytes(payload));
-    }
+    function decodePlainPayload(payload) { return bytesToUtf8(base64ToBytes(payload)); }
 
     async function decryptData(base64Data, password) {
         const encryptedData = base64ToBytes(base64Data);
         const salt = encryptedData.slice(0, 16);
         const iv = encryptedData.slice(16, 28);
         const data = encryptedData.slice(28);
-
         const enc = new TextEncoder();
-        const keyMaterial = await window.crypto.subtle.importKey(
-            "raw", enc.encode(password), {name: "PBKDF2"}, false, ["deriveKey"]
-        );
-        const key = await window.crypto.subtle.deriveKey(
-            { "name": "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
-            keyMaterial, { "name": "AES-GCM", "length": 256 }, false, ["decrypt"]
-        );
-
+        const keyMaterial = await window.crypto.subtle.importKey("raw", enc.encode(password), {name: "PBKDF2"}, false, ["deriveKey"]);
+        const key = await window.crypto.subtle.deriveKey({ "name": "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" }, keyMaterial, { "name": "AES-GCM", "length": 256 }, false, ["decrypt"]);
         const decrypted = await window.crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, key, data);
         return new TextDecoder().decode(decrypted);
     }
 
-    async function loadPriceBundle() {
-        if (!window.PRICE_BUNDLE) throw new Error("未找到 price.bundle.js");
-
-        const bundle = window.PRICE_BUNDLE;
-        let jsonText = "";
-
-        if (bundle.secured) {
-            setStatus("价格包已加密，请输入密码", "lock");
-            const pwd = prompt("请输入价格包密码：");
-            if (!pwd) throw new Error("未输入价格包密码");
-            jsonText = await decryptData(bundle.payload, pwd);
-        } else {
-            jsonText = decodePlainPayload(bundle.payload);
-        }
-
-        const parsed = JSON.parse(jsonText || "{}");
-        PRICE_DATA = { bySpec: parsed.bySpec || {} };
-        updateVersionText(bundle.meta, null, "本地(自动同步)");
+    function normalizePriceDataset(parsed) {
+        const rawBySpec = parsed && parsed.bySpec ? parsed.bySpec : {};
+        const strings = Array.isArray(parsed && parsed.strings) ? parsed.strings : [];
+        const bySpec = {};
+        Object.keys(rawBySpec).forEach(spec => {
+            const item = rawBySpec[spec];
+            if (Array.isArray(item)) {
+                const sIdx = Number(item[2]);
+                const rIdx = Number(item[3]);
+                bySpec[spec] = {
+                    c: item[0] || "",
+                    p: Number(item[1]) || 0,
+                    s: sIdx >= 0 ? (strings[sIdx] || "") : "",
+                    r: rIdx >= 0 ? (strings[rIdx] || "") : ""
+                };
+            } else {
+                bySpec[spec] = {
+                    c: item.c || "",
+                    p: Number(item.p) || 0,
+                    s: item.s || "",
+                    r: item.r || ""
+                };
+            }
+        });
+        return { bySpec, strings };
     }
 
-    function parseStockBundle(stockObj) {
-        if (!stockObj) throw new Error("未找到 stock.bundle.js");
-        if (stockObj.secured) throw new Error("库存包必须保持明文");
-        const text = decodePlainPayload(stockObj.payload || "");
-        const parsed = JSON.parse(text || "{}");
+    function parsePriceBundle(bundle) {
+        if (!bundle) throw new Error("未找到价格包");
+        let jsonText = "";
+        if (bundle.secured) throw new Error("当前版本不支持分片加密包");
+        jsonText = decodePlainPayload(bundle.payload || "");
+        const parsed = JSON.parse(jsonText || "{}");
+        return { data: normalizePriceDataset(parsed), meta: bundle.meta || null };
+    }
+
+    function getPriceShardConfig() {
+        const cfg = (window.APP_CONFIG && window.APP_CONFIG.priceShards) || {};
+        const shards = Array.isArray(cfg.shards) ? cfg.shards : [];
         return {
-            byCode: parsed.byCode || {},
-            meta: stockObj.meta || null
+            enabled: !!cfg.enabled,
+            version: String(cfg.version || "").trim(),
+            timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
+            shards: shards,
+            preload: Array.isArray(cfg.preload) ? cfg.preload : []
         };
     }
 
-    function getRemoteStockConfig() {
-      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remoteStock) || {};
-      return {
-        enabled: !!cfg.enabled,
-        url: String(cfg.url || "").trim(),
-        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
-        cacheBust: String(cfg.cacheBust || "hourly")
-      };
-    }
-
-    function withCacheBust(url, cacheMode) {
-      const mode = String(cacheMode || "hourly").toLowerCase();
-      const now = new Date();
-      let key = String(now.getTime());
-      if (mode === "hourly") {
-        key = now.toISOString().slice(0, 13).replace(/[-:T]/g, "");
-      } else if (mode === "daily") {
-        key = now.toISOString().slice(0, 10).replace(/-/g, "");
-      }
-      const sep = url.includes("?") ? "&" : "?";
-      return url + sep + "v=" + encodeURIComponent(key);
-    }
-
-    function loadRemoteStockScript(url, timeoutMs) {
+    function loadRemoteScript(globalVarName, url, timeoutMs) {
       return new Promise((resolve, reject) => {
         const script = document.createElement("script");
         let done = false;
@@ -243,7 +224,7 @@
           if (done) return;
           done = true;
           script.remove();
-          reject(new Error("远程库存加载超时"));
+          reject(new Error("脚本加载超时"));
         }, timeoutMs);
 
         script.src = url;
@@ -252,24 +233,98 @@
           if (done) return;
           done = true;
           clearTimeout(timer);
-          resolve(window.STOCK_BUNDLE);
+          resolve(window[globalVarName]);
         };
         script.onerror = () => {
           if (done) return;
           done = true;
           clearTimeout(timer);
           script.remove();
-          reject(new Error("远程库存脚本加载失败"));
+          reject(new Error("脚本加载失败"));
         };
         document.head.appendChild(script);
       });
+    }
+
+    async function loadPriceBundleByScript(url, timeoutMs) {
+        const previous = window.PRICE_BUNDLE;
+        try {
+            delete window.PRICE_BUNDLE;
+            const bundle = await loadRemoteScript("PRICE_BUNDLE", url, timeoutMs);
+            return parsePriceBundle(bundle);
+        } catch (err) {
+            window.PRICE_BUNDLE = previous;
+            throw err;
+        }
+    }
+
+    function mergePriceData(nextData) {
+        const src = (nextData && nextData.bySpec) || {};
+        Object.keys(src).forEach(spec => {
+            PRICE_DATA.bySpec[spec] = src[spec];
+        });
+    }
+
+    async function loadPriceShard(shard, timeoutMs) {
+        const path = String(shard.path || "").trim();
+        if (!path) return;
+        if (LOADED_PRICE_SHARDS[path]) return;
+        const loaded = await loadPriceBundleByScript(path, timeoutMs);
+        mergePriceData(loaded.data);
+        LOADED_PRICE_SHARDS[path] = true;
+    }
+
+    async function loadPriceBundle() {
+        const cfg = getPriceShardConfig();
+        PRICE_DATA = { bySpec: {}, strings: [] };
+        LOADED_PRICE_SHARDS = {};
+
+        if (cfg.enabled && cfg.shards.length) {
+            const preloadSet = {};
+            cfg.preload.forEach(x => preloadSet[String(x || "").trim()] = true);
+            for (const shard of cfg.shards) {
+                const path = String(shard.path || "").trim();
+                if (preloadSet[path]) {
+                    await loadPriceShard(shard, cfg.timeoutMs);
+                }
+            }
+            updateVersionText({ version: cfg.version || "sharded" }, null, "价格按需分片");
+            return;
+        }
+
+        const local = await loadPriceBundleByScript("price.bundle.js", 8000);
+        PRICE_DATA = local.data;
+        updateVersionText(local.meta, null, "本地(自动同步)");
+    }
+
+    function parseStockBundle(stockObj) {
+        if (!stockObj) throw new Error("未找到 stock.bundle.js");
+        if (stockObj.secured) throw new Error("库存包必须保持明文");
+        const text = decodePlainPayload(stockObj.payload || "");
+        const parsed = JSON.parse(text || "{}");
+        return { byCode: parsed.byCode || {}, meta: stockObj.meta || null };
+    }
+
+    function getRemoteStockConfig() {
+      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remoteStock) || {};
+      return { enabled: !!cfg.enabled, url: String(cfg.url || "").trim(), timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000, cacheBust: String(cfg.cacheBust || "hourly") };
+    }
+
+    function withCacheBust(url, cacheMode) {
+      const mode = String(cacheMode || "hourly").toLowerCase();
+      const now = new Date();
+      let key = String(now.getTime());
+      if (mode === "hourly") key = now.toISOString().slice(0, 13).replace(/[-:T]/g, "");
+      else if (mode === "daily") key = now.toISOString().slice(0, 10).replace(/-/g, "");
+      const sep = url.includes("?") ? "&" : "?";
+      return url + sep + "v=" + encodeURIComponent(key);
     }
 
     async function loadStockBundleByScript(url, timeoutMs) {
       const previous = window.STOCK_BUNDLE;
       try {
         delete window.STOCK_BUNDLE;
-        const bundle = await loadRemoteStockScript(url, timeoutMs);
+        const bundle = await loadRemoteScript("STOCK_BUNDLE", url, timeoutMs);
         return parseStockBundle(bundle);
       } catch (err) {
         window.STOCK_BUNDLE = previous;
@@ -284,7 +339,7 @@
           const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
           const remote = await loadStockBundleByScript(remoteUrl, cfg.timeoutMs);
           STOCK_DATA = { byCode: remote.byCode };
-          updateVersionText(window.PRICE_BUNDLE.meta, remote.meta, "远程(stock-data)");
+          updateVersionText({ version: getPriceShardConfig().version || "-" }, remote.meta, "远程(stock-data)");
           return;
         } catch (err) {
           showToast("远程库存失败，已回退本地");
@@ -294,25 +349,17 @@
       const local = await loadStockBundleByScript("stock.bundle.js", 8000);
       STOCK_DATA = { byCode: local.byCode };
       const source = (cfg.enabled && cfg.url) ? "本地(回退)" : "本地(自动同步)";
-      updateVersionText(window.PRICE_BUNDLE.meta, local.meta, source);
+      updateVersionText({ version: getPriceShardConfig().version || "-" }, local.meta, source);
     }
 
     function rebuildMergedDB() {
         DB = {};
         const bySpec = PRICE_DATA.bySpec || {};
         const byCode = STOCK_DATA.byCode || {};
-
         Object.keys(bySpec).forEach(spec => {
             const item = bySpec[spec] || {};
             const code = item.c || "";
-            DB[spec] = {
-                c: code,
-                p: Number(item.p) || 0,
-                s: item.s || "",
-                r: item.r || "",
-                b: item.b || "",
-                i: byCode[code] || ""
-            };
+            DB[spec] = { c: code, p: Number(item.p) || 0, s: item.s || "", r: item.r || "", i: byCode[code] || "" };
         });
     }
 
@@ -323,8 +370,24 @@
       document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
     }
 
-    function doSearch() {
+    async function ensurePriceShardsForQuery(text) {
+      const cfg = getPriceShardConfig();
+      if (!(cfg.enabled && cfg.shards.length)) return;
+      const keywords = text.toUpperCase().split(/\s+/).filter(Boolean);
+      const loadTargets = cfg.shards.filter(shard => {
+        const tags = Array.isArray(shard.keywords) ? shard.keywords.map(x => String(x || "").toUpperCase()) : [];
+        if (!tags.length) return false;
+        return keywords.some(kw => tags.some(tag => kw.includes(tag) || tag.includes(kw)));
+      });
+      for (const shard of loadTargets) {
+        await loadPriceShard(shard, cfg.timeoutMs);
+      }
+      if (loadTargets.length) rebuildMergedDB();
+    }
+
+    async function doSearch() {
         const text = document.getElementById('queryInput').value;
+        await ensurePriceShardsForQuery(text);
         const discount = parseFloat(document.getElementById('discount').value) || 1;
         const decimals = parseInt(document.getElementById('decimals').value) || 0;
         const threshold = parseFloat(document.getElementById('threshold').value) || 100;
@@ -332,39 +395,22 @@
         const tbody = document.getElementById('resultBody');
         tbody.innerHTML = '';
         g_Results = [];
-
         const lines = text.split(/\r?\n/).filter(l => l.trim());
         const allKeys = Object.keys(DB);
-
         lines.forEach(line => {
             const keywords = line.trim().toUpperCase().split(/\s+/);
             if (!keywords.length) return;
-
             const matches = allKeys.filter(key => {
                 const item = DB[key];
                 const fullStr = (key + " " + item.c).toUpperCase();
                 return keywords.every(kw => fullStr.includes(kw));
             });
-
             matches.forEach(matchKey => {
                 const item = DB[matchKey];
                 const priceInfo = calcDiscountedPrice(item.p, discount, decimals, threshold);
                 const isExact = (matchKey.toUpperCase() === line.trim().toUpperCase());
-
-                const rowData = {
-                    id: g_Results.length,
-                    code: item.c,
-                    spec: matchKey,
-                    price: priceInfo.display,
-                    facePrice: item.p,
-                    remark: item.r,
-                    special: item.s,
-                    stock: item.i,
-                    discount: discount,
-                    checked: isExact
-                };
+                const rowData = { id: g_Results.length, code: item.c, spec: matchKey, price: priceInfo.display, facePrice: item.p, remark: item.r, special: item.s, stock: item.i, discount: discount, checked: isExact };
                 g_Results.push(rowData);
-
                 const tr = document.createElement('tr');
                 if(isExact) tr.className = 'match-exact';
                 tr.innerHTML = `
@@ -372,12 +418,7 @@
                     <td>${matchKey}</td>
                     <td>${item.p}</td>
                     <td class="price">${priceInfo.display}</td>
-                    <td>
-                        <div class="discount-cell">
-                            <input class="discount-input" type="number" step="0.01" value="${(rowData.discount * 100).toFixed(2)}" data-id="${rowData.id}" oninput="onRowDiscountChange(this)">
-                            <span class="discount-suffix">%</span>
-                        </div>
-                    </td>
+                    <td><div class="discount-cell"><input class="discount-input" type="number" step="0.01" value="${(rowData.discount * 100).toFixed(2)}" data-id="${rowData.id}" oninput="onRowDiscountChange(this)"><span class="discount-suffix">%</span></div></td>
                     <td>${item.c}</td>
                     <td class="stock">${item.i || ""}</td>
                     <td>${item.r || ""}</td>
@@ -396,50 +437,23 @@
         const factor = Math.pow(10, decimals);
         let finalPrice = Math.ceil(rawCalc * factor) / factor;
         if(finalPrice > threshold) finalPrice = Math.ceil(rawCalc);
-        const display = (finalPrice % 1 === 0 && finalPrice > threshold)
-            ? finalPrice.toFixed(0) : finalPrice.toFixed(decimals);
+        const display = (finalPrice % 1 === 0 && finalPrice > threshold) ? finalPrice.toFixed(0) : finalPrice.toFixed(decimals);
         return { value: finalPrice, display: display };
     }
 
-    function onRowDiscountChange(input) {
-        const id = parseInt(input.getAttribute('data-id'), 10);
-        if(isNaN(id) || !g_Results[id]) return;
-
-        const decimals = parseInt(document.getElementById('decimals').value) || 0;
-        const threshold = parseFloat(document.getElementById('threshold').value) || 100;
-        let discountPercent = parseFloat(input.value);
-        if(isNaN(discountPercent)) discountPercent = 0;
-
-        const discount = discountPercent / 100;
-        const row = g_Results[id];
-        const priceInfo = calcDiscountedPrice(row.facePrice, discount, decimals, threshold);
-        row.discount = discount;
-        row.price = priceInfo.display;
-
-        const tr = input.closest('tr');
-        if(tr) {
-            const priceCell = tr.querySelector('.price');
-            if(priceCell) priceCell.textContent = priceInfo.display;
-        }
-    }
+    function onRowDiscountChange(input) { const id = parseInt(input.getAttribute('data-id'), 10); if(isNaN(id) || !g_Results[id]) return; const decimals = parseInt(document.getElementById('decimals').value) || 0; const threshold = parseFloat(document.getElementById('threshold').value) || 100; let discountPercent = parseFloat(input.value); if(isNaN(discountPercent)) discountPercent = 0; const discount = discountPercent / 100; const row = g_Results[id]; const priceInfo = calcDiscountedPrice(row.facePrice, discount, decimals, threshold); row.discount = discount; row.price = priceInfo.display; const tr = input.closest('tr'); if(tr) { const priceCell = tr.querySelector('.price'); if(priceCell) priceCell.textContent = priceInfo.display; } }
 
     function doCopy() {
         const checkboxes = document.querySelectorAll('#resultBody input[type=checkbox]');
-        checkboxes.forEach(cb => {
-            const id = cb.getAttribute('data-id');
-            if(g_Results[id]) g_Results[id].checked = cb.checked;
-        });
-
+        checkboxes.forEach(cb => { const id = cb.getAttribute('data-id'); if(g_Results[id]) g_Results[id].checked = cb.checked; });
         const selected = g_Results.filter(r => r.checked);
         if(selected.length === 0) return showToast("请先勾选需要复制的行");
-
         const showCode = document.getElementById('chk_code').checked;
         const showSpec = document.getElementById('chk_spec').checked;
         const showPrice = document.getElementById('chk_price').checked;
         const showSpecial = document.getElementById('chk_special').checked;
         const showStock = document.getElementById('chk_stock').checked;
         const showRemark = document.getElementById('chk_remark').checked;
-
         let text = "";
         selected.forEach(res => {
             const line1Parts = [];
@@ -448,42 +462,18 @@
             if(showPrice) line1Parts.push("含税" + res.price);
             if(showSpecial && res.special) line1Parts.push("特价:" + res.special);
             if(showStock && res.stock) line1Parts.push(res.stock);
-
-            text += line1Parts.join(" ") + "\n";
-            if(showRemark && res.remark) text += "补充说明：" + res.remark + "\n";
+            text += line1Parts.join(" ") + "
+";
+            if(showRemark && res.remark) text += "补充说明：" + res.remark + "
+";
         });
-
         copyToClipboard(text);
     }
 
-    function toggleAll(source) {
-        const checkboxes = document.querySelectorAll('#resultBody input[type=checkbox]');
-        checkboxes.forEach(cb => cb.checked = source.checked);
-    }
-
-    function openMmcLogin() {
-        copyToClipboard(MMC_PASSWORD);
-        showToast("已复制密码");
-        window.open(MMC_URL);
-    }
-
-    function copyToClipboard(text) {
-        const el = document.createElement('textarea');
-        el.value = text;
-        el.style.position='fixed';
-        el.style.left='-9999px';
-        document.body.appendChild(el);
-        el.select();
-        try { document.execCommand('copy'); showToast("已复制"); } catch(e) {}
-        document.body.removeChild(el);
-    }
-
-    function showToast(msg) {
-        const t = document.getElementById('toast');
-        t.innerText = msg;
-        t.style.display='block';
-        setTimeout(() => t.style.display='none', 1500);
-    }
+    function toggleAll(source) { const checkboxes = document.querySelectorAll('#resultBody input[type=checkbox]'); checkboxes.forEach(cb => cb.checked = source.checked); }
+    function openMmcLogin() { copyToClipboard(MMC_PASSWORD); showToast("已复制密码"); window.open(MMC_URL); }
+    function copyToClipboard(text) { const el = document.createElement('textarea'); el.value = text; el.style.position='fixed'; el.style.left='-9999px'; document.body.appendChild(el); el.select(); try { document.execCommand('copy'); showToast("已复制"); } catch(e) {} document.body.removeChild(el); }
+    function showToast(msg) { const t = document.getElementById('toast'); t.innerText = msg; t.style.display='block'; setTimeout(() => t.style.display='none', 1500); }
 </script>
 </body>
 </html>

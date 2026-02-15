@@ -126,7 +126,8 @@
 
   async function encodePriceBundle(priceDataset, password) {
     var bySpec = (priceDataset && priceDataset.bySpec) || {};
-    var json = JSON.stringify({ bySpec: bySpec });
+    var strings = Array.isArray(priceDataset && priceDataset.strings) ? priceDataset.strings : [];
+    var json = JSON.stringify({ bySpec: bySpec, strings: strings });
     var secured = !!(password && String(password).trim());
     var payload = secured
       ? await encryptText(json, String(password).trim())
@@ -138,6 +139,7 @@
       meta: {
         version: new Date().toISOString(),
         rowCount: Object.keys(bySpec).length,
+        dictionarySize: strings.length,
       },
     };
   }
@@ -152,7 +154,7 @@
       text = decodePlainPayload(data.payload || "");
     }
     var parsed = JSON.parse(text || "{}");
-    return { bySpec: parsed.bySpec || {} };
+    return { bySpec: parsed.bySpec || {}, strings: Array.isArray(parsed.strings) ? parsed.strings : [] };
   }
 
   function encodeStockBundle(stockByCode) {
