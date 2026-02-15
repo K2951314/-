@@ -116,8 +116,8 @@
     </div>
 </div>
 
-<script src="runtime-config.js"></script>
-<script src="price.bundle.js"></script>
+<script src="runtime-config.js?v=20260215-efa267b2ab"></script>
+<script src="price.bundle.js?v=20260215-efa267b2ab"></script>
 <script>
     let PRICE_DATA = { bySpec: {} };
     let STOCK_DATA = { byCode: {} };
@@ -217,22 +217,8 @@
       return {
         enabled: !!cfg.enabled,
         url: String(cfg.url || "").trim(),
-        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
-        cacheBust: String(cfg.cacheBust || "hourly")
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000
       };
-    }
-
-    function withCacheBust(url, cacheMode) {
-      const mode = String(cacheMode || "hourly").toLowerCase();
-      const now = new Date();
-      let key = String(now.getTime());
-      if (mode === "hourly") {
-        key = now.toISOString().slice(0, 13).replace(/[-:T]/g, "");
-      } else if (mode === "daily") {
-        key = now.toISOString().slice(0, 10).replace(/-/g, "");
-      }
-      const sep = url.includes("?") ? "&" : "?";
-      return url + sep + "v=" + encodeURIComponent(key);
     }
 
     function loadRemoteStockScript(url, timeoutMs) {
@@ -281,7 +267,7 @@
       const cfg = getRemoteStockConfig();
       if (cfg.enabled && cfg.url) {
         try {
-          const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
+          const remoteUrl = cfg.url;
           const remote = await loadStockBundleByScript(remoteUrl, cfg.timeoutMs);
           STOCK_DATA = { byCode: remote.byCode };
           updateVersionText(window.PRICE_BUNDLE.meta, remote.meta, "远程(stock-data)");

@@ -4,8 +4,8 @@ const path = require("path");
 
 function run() {
   const html = fs.readFileSync(path.join(process.cwd(), "apps/v9/index.html"), "utf8");
-  assert.ok(html.includes('src="runtime-config.js"'), "v9 index should load runtime-config.js");
-  assert.ok(html.includes('src="price.bundle.js"'), "v9 index should load price bundle");
+  assert.ok(html.includes('src="runtime-config.js?v='), "v9 index should load versioned runtime-config.js");
+  assert.ok(html.includes('src="price.bundle.js?v='), "v9 index should load versioned price bundle");
   assert.ok(!html.includes('src="stock.bundle.js"'), "v9 index should not eagerly load local stock bundle");
   assert.ok(
     !html.includes("data-utils.js"),

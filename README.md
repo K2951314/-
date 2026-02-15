@@ -68,7 +68,7 @@ npm run doctor
 ## Netlify (Git Auto Deploy)
 1. Push this repo to GitHub.
 2. In Netlify: `Add new site` -> `Import from Git` -> select repo/branch.
-3. Build command: keep empty.
+3. Build command: `npm run prepare:release`.
 4. Publish directory: `apps/v9` (or rely on `netlify.toml`).
 5. Deploy and open site root `/`.
 
@@ -118,8 +118,8 @@ To minimize Netlify bandwidth while keeping high-frequency inventory updates:
 3. Load stock from jsDelivr in `apps/v9/runtime-config.js` for zero-redeploy updates.
 4. Apply cache policy in `apps/v9/_headers`:
    - `index.html`: revalidate on refresh
-   - `runtime-config.js`: short cache (5 minutes)
-   - `price.bundle.js` / local `stock.bundle.js`: revalidate
+   - versioned `runtime-config.js?v=<releaseVersion>` / `price.bundle.js?v=<releaseVersion>`: immutable long cache
+   - local `stock.bundle.js` fallback: revalidate
 
 Expected outcome:
 - Most high-frequency stock traffic is served by jsDelivr, reducing Netlify egress.
@@ -130,6 +130,20 @@ Known trade-offs:
 - Adds dependency on jsDelivr availability.
 - CDN propagation can introduce short-lived staleness.
 - Keep local `stock.bundle.js` as fallback if remote fetch fails.
+
+
+## Release Versioning (Cache Strategy)
+- Release step (`npm run prepare:release`) generates `releaseVersion` (UTC date + content hash by default).
+- The script injects this version into:
+  - `apps/v9/runtime-config.js` remote stock URL (`...stock.bundle.js?v=<releaseVersion>`)
+  - `apps/v9/index.html` script tags (`runtime-config.js?v=<releaseVersion>` / `price.bundle.js?v=<releaseVersion>`)
+- Same version: browser reuses immutable cache, no repeated large bundle download.
+- New version: `index.html` revalidation picks new query string and browser pulls fresh bundles automatically.
+
+Post-release verification checklist:
+1. Open DevTools Network and hard-disable cache off (normal cache behavior).
+2. Refresh same deployed version multiple times: `price.bundle.js?v=...` should show `from memory cache` or `from disk cache`.
+3. Deploy a new version and refresh: request URL changes to new `?v=...` and bundle is fetched once.
 
 ## Security Baseline (Recommended)
 For static hosting, configure:
