@@ -1,44 +1,38 @@
 # v9 Smart Pricing System
 
 ## Overview
-This repository uses a split-bundle architecture:
-- `apps/v9/price.bundle.js`: low-frequency price bundle
-- `apps/v9/stock.bundle.js`: local fallback stock bundle
-- `apps/v9/runtime-config.js`: remote stock runtime config
+This repository uses split bundles:
+- `apps/v9/price.bundle.js`: local fallback price bundle (large, low-frequency)
+- `apps/v9/stock.bundle.js`: local fallback stock bundle (small, high-frequency)
+- `apps/v9/runtime-config.js`: remote source config for price/stock
 
-Stock is synchronized from an external source via GitHub Actions.
+Current bandwidth strategy:
+- Stock: remote-first (`stock-data` branch CDN), local fallback.
+- Price: lazy load on first search, remote manifest + hashed file, local fallback.
+
 Netlify publish root is `apps/v9`.
 
 ## Project Layout
 - `apps/v9/`: production query UI
-- `merger/`: browser-side merger/export tool
-- `tools/`: automation scripts
-- `config/`: runtime configuration and schema
-- `.github/workflows/`: CI and stock sync workflows
-- `docs/adr/`: architecture decisions
+- `tools/sync_stock_bundle.mjs`: stock sync tool
+- `tools/publish_price_bundle.mjs`: price hash publish tool
+- `.github/workflows/sync-stock.yml`: scheduled stock publish
+- `.github/workflows/publish-price.yml`: manual price publish
+- `.github/workflows/ci.yml`: CI tests
 
 ## Required Config
-- `config/system.json`: canonical path contract
-- `config/stock-source.json`: local stock-source template
-- `config/stock-source.schema.json`: stock-source schema
+- `config/system.json`
+- `config/stock-source.json`
+- `config/stock-source.schema.json`
 
-Production source credentials should come from GitHub Secrets:
-- `STOCK_SOURCE_URL`
+GitHub Secrets:
+- `STOCK_SOURCE_URL` (required)
 - `STOCK_SOURCE_TOKEN` (optional)
 
-## Stock Source Rules
-Supported source kinds:
-- `stock.bundle.js`
-- `json`
-- `csv`
-- `xlsx` / `xls`
-
-Unsupported source kinds:
-- `text/html` page links (document preview/share page)
-
-Confirm the link is a downloadable file/API (not a page):
+## Stock Source Validation
+Use this to verify the source is downloadable data, not a page:
 ```powershell
-curl.exe -L -o NUL -w "http:%{http_code} type:%{content_type}`n" "在线表格链接"
+curl.exe -L -o NUL -w "http:%{http_code} type:%{content_type}`n" "online-stock-link"
 ```
 Expected:
 - `http:200`
@@ -60,91 +54,61 @@ Run stock sync locally:
 npm run sync:stock
 ```
 
-Run config/path doctor:
+Publish hashed price locally (for verification):
+```bash
+npm run publish:price
+```
+
+Run doctor:
 ```bash
 npm run doctor
 ```
 
-## Netlify (Git Auto Deploy)
-1. Push this repo to GitHub.
-2. In Netlify: `Add new site` -> `Import from Git` -> select repo/branch.
-3. Build command: keep empty.
-4. Publish directory: `apps/v9` (or rely on `netlify.toml`).
-5. Deploy and open site root `/`.
+## Netlify Deploy
+1. Connect repo to Netlify.
+2. Build command: empty.
+3. Publish directory: `apps/v9` (or keep `netlify.toml`).
 
-If you drag-and-drop manually, drag `apps/v9` only.
+## Runtime Loading Policy
+- No manual stock URL input in UI.
+- Price is not loaded on page open; it is loaded on first `智能匹配`.
+- Remote failure falls back to local files:
+  - price fallback: `apps/v9/price.bundle.js`
+  - stock fallback: `apps/v9/stock.bundle.js`
 
-## Frontend Stock Loading Policy
-- Manual stock URL override UI is removed.
-- Query page tries remote `stock.bundle.js` from `apps/v9/runtime-config.js` first.
-- If remote load fails, UI falls back to local `apps/v9/stock.bundle.js`.
+## Workflows
+### sync-stock
+File: `.github/workflows/sync-stock.yml`
+- Schedule: `cron: "0 16 * * *"` (daily at 00:00 Beijing time)
+- Pull stock source.
+- Conditional request with ETag/Last-Modified when available.
+- Publish only `apps/v9/stock.bundle.js` to branch `stock-data`.
+- Commit only when content changed.
 
-## GitHub Actions
-- `.github/workflows/sync-stock.yml`: scheduled stock sync
-- `.github/workflows/ci.yml`: PR/push test gate
+### publish-price
+File: `.github/workflows/publish-price.yml`
+- Trigger: `workflow_dispatch` (manual)
+- Input: `apps/v9/price.bundle.js` from `main`
+- Output to `stock-data` branch:
+  - `apps/v9/price/price.<sha256-12>.bundle.js`
+  - `apps/v9/price-manifest.json`
+- Commit only when hash changed.
 
-`sync-stock` workflow:
-1. Loads path contract from `config/system.json`
-2. Pulls source from secrets
-3. Validates source kind and bounds
-4. Seeds previous artifact from `stock-data` branch (for conditional request)
-5. Builds temporary stock bundle artifact (`tmp/stock.bundle.js`)
-6. Publishes only `apps/v9/stock.bundle.js` to branch `stock-data`
-7. Commits only when file content changed
-
-Local sync script behavior:
-- `tools/sync_stock_bundle.mjs` is idempotent.
-- If `byCode` hash is unchanged, it skips write and returns `changed=false`.
-- When source supports ETag/Last-Modified, script sends conditional headers.
-
-## Sync Frequency (How to Change Later)
+## Change Sync Frequency Later
 Edit `.github/workflows/sync-stock.yml`:
 ```yaml
 on:
   schedule:
-    - cron: "0 * * * *"
+    - cron: "0 16 * * *"
 ```
 
-Common examples (GitHub Actions cron uses UTC):
-- Every hour: `0 * * * *`
+Common cron examples (UTC):
+- Hourly: `0 * * * *`
 - Every 6 hours: `0 */6 * * *`
 - Every 12 hours: `0 */12 * * *`
-- Daily at 00:00 UTC: `0 0 * * *`
-
-## Plan C Rollout (Long-Term Strategy)
-To minimize Netlify bandwidth while keeping high-frequency inventory updates:
-1. Keep Netlify deployment tracking only `main` (UI shell and price bundle).
-2. Publish `apps/v9/stock.bundle.js` to `stock-data` branch via workflow.
-3. Load stock from jsDelivr in `apps/v9/runtime-config.js` for zero-redeploy updates.
-4. Apply cache policy in `apps/v9/_headers`:
-   - `index.html`: revalidate on refresh
-   - `runtime-config.js`: short cache (5 minutes)
-   - `price.bundle.js` / local `stock.bundle.js`: revalidate
-
-Expected outcome:
-- Most high-frequency stock traffic is served by jsDelivr, reducing Netlify egress.
-- Netlify mainly serves stable app shell files.
-- Inventory updates no longer require Netlify redeploy.
-
-Known trade-offs:
-- Adds dependency on jsDelivr availability.
-- CDN propagation can introduce short-lived staleness.
-- Keep local `stock.bundle.js` as fallback if remote fetch fails.
-
-## Security Baseline (Recommended)
-For static hosting, configure:
-- `Content-Security-Policy`
-- `Referrer-Policy`
-- `X-Content-Type-Options: nosniff`
-
-Also recommended:
-- pin third-party GitHub Actions by SHA
-- keep `contents` permission minimal in workflows
+- Daily 00:00 Beijing: `0 16 * * *`
 
 ## Notes
-- Inventory key is `code` (`byCode`).
-- Price bundle can remain encrypted.
-- Stock bundle remains plain text for high-frequency updates.
-- Netlify should track `main` only; high-frequency stock updates are pushed to `stock-data`.
-- For zero-redeploy stock updates, set `apps/v9/runtime-config.js` to jsDelivr URL of `stock-data` branch.
-- When `price.bundle.js` is encrypted (`secured: true`), first visit requires password input.
+- Netlify should track only `main`.
+- High-frequency stock/price remote artifacts should stay in `stock-data`.
+- Price bundle may remain encrypted; password prompt appears when lazy-loading price on first search.
