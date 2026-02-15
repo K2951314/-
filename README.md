@@ -111,6 +111,26 @@ Common examples (GitHub Actions cron uses UTC):
 - Every 12 hours: `0 */12 * * *`
 - Daily at 00:00 UTC: `0 0 * * *`
 
+## Plan C Rollout (Long-Term Strategy)
+To minimize Netlify bandwidth while keeping high-frequency inventory updates:
+1. Keep Netlify deployment tracking only `main` (UI shell and price bundle).
+2. Publish `apps/v9/stock.bundle.js` to `stock-data` branch via workflow.
+3. Load stock from jsDelivr in `apps/v9/runtime-config.js` for zero-redeploy updates.
+4. Apply cache policy in `apps/v9/_headers`:
+   - `index.html`: revalidate on refresh
+   - `runtime-config.js`: short cache (5 minutes)
+   - `price.bundle.js` / local `stock.bundle.js`: revalidate
+
+Expected outcome:
+- Most high-frequency stock traffic is served by jsDelivr, reducing Netlify egress.
+- Netlify mainly serves stable app shell files.
+- Inventory updates no longer require Netlify redeploy.
+
+Known trade-offs:
+- Adds dependency on jsDelivr availability.
+- CDN propagation can introduce short-lived staleness.
+- Keep local `stock.bundle.js` as fallback if remote fetch fails.
+
 ## Security Baseline (Recommended)
 For static hosting, configure:
 - `Content-Security-Policy`
