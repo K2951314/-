@@ -77,7 +77,7 @@
             <div class="group"><label>折扣</label><input type="number" id="discount" value="0.53" step="0.01"></div>
             <div class="group"><label>小数位</label><input type="number" id="decimals" value="1" step="1"></div>
             <div class="group"><label>取整阈值</label><input type="number" id="threshold" value="100" step="1"></div>
-            <button class="btn btn-search" onclick="doSearch()">智能匹配</button>
+            <button id="btnSearch" class="btn btn-search" onclick="doSearch()">智能匹配</button>
             <button class="btn btn-copy" onclick="doCopy()">复制勾选</button>
         </div>
 
@@ -117,24 +117,28 @@
 </div>
 
 <script src="runtime-config.js"></script>
-<script src="price.bundle.js"></script>
 <script>
     let PRICE_DATA = { bySpec: {} };
     let STOCK_DATA = { byCode: {} };
+    let PRICE_META = null;
+    let STOCK_META = null;
+    let PRICE_SOURCE = "未加载";
+    let STOCK_SOURCE = "未加载";
     let DB = {};
     let g_Results = [];
+    let g_PriceReady = false;
+    let g_PriceLoadingPromise = null;
 
     const MMC_URL = "https://mcweb.mitsubishi-materials.com/concerto-mmsc-ec/login.jsp";
     const MMC_PASSWORD = "%461971#";
 
     window.onload = async function() {
         try {
-            await loadPriceBundle();
             await loadStockBundle();
             rebuildMergedDB();
-            setStatus("数据已加载", "ok");
+            setStatus("库存已加载，等待查询", "ok");
         } catch (err) {
-            setStatus("数据加载失败", "error");
+            setStatus("库存加载失败", "error");
             showToast(err.message || "加载失败");
         }
     };
@@ -143,8 +147,21 @@
         const el = document.getElementById('status');
         el.innerText = msg;
         el.className = 'status-badge ' + type;
-        if(type==='error') el.style.background = '#ffcdd2';
+        if(type === 'error') el.style.background = '#ffcdd2';
         else el.style.background = "";
+    }
+
+    function setSearchLoading(loading) {
+      const btn = document.getElementById("btnSearch");
+      if (!btn) return;
+      if (loading) {
+        if (!btn.dataset.defaultText) btn.dataset.defaultText = btn.textContent;
+        btn.textContent = "加载价格数据中...";
+        btn.disabled = true;
+      } else {
+        btn.textContent = btn.dataset.defaultText || "智能匹配";
+        btn.disabled = false;
+      }
     }
 
     function bytesToUtf8(bytes) {
@@ -181,47 +198,6 @@
         return new TextDecoder().decode(decrypted);
     }
 
-    async function loadPriceBundle() {
-        if (!window.PRICE_BUNDLE) throw new Error("未找到 price.bundle.js");
-
-        const bundle = window.PRICE_BUNDLE;
-        let jsonText = "";
-
-        if (bundle.secured) {
-            setStatus("价格包已加密，请输入密码", "lock");
-            const pwd = prompt("请输入价格包密码：");
-            if (!pwd) throw new Error("未输入价格包密码");
-            jsonText = await decryptData(bundle.payload, pwd);
-        } else {
-            jsonText = decodePlainPayload(bundle.payload);
-        }
-
-        const parsed = JSON.parse(jsonText || "{}");
-        PRICE_DATA = { bySpec: parsed.bySpec || {} };
-        updateVersionText(bundle.meta, null, "本地(自动同步)");
-    }
-
-    function parseStockBundle(stockObj) {
-        if (!stockObj) throw new Error("未找到 stock.bundle.js");
-        if (stockObj.secured) throw new Error("库存包必须保持明文");
-        const text = decodePlainPayload(stockObj.payload || "");
-        const parsed = JSON.parse(text || "{}");
-        return {
-            byCode: parsed.byCode || {},
-            meta: stockObj.meta || null
-        };
-    }
-
-    function getRemoteStockConfig() {
-      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remoteStock) || {};
-      return {
-        enabled: !!cfg.enabled,
-        url: String(cfg.url || "").trim(),
-        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
-        cacheBust: String(cfg.cacheBust || "hourly")
-      };
-    }
-
     function withCacheBust(url, cacheMode) {
       const mode = String(cacheMode || "hourly").toLowerCase();
       const now = new Date();
@@ -235,7 +211,8 @@
       return url + sep + "v=" + encodeURIComponent(key);
     }
 
-    function loadRemoteStockScript(url, timeoutMs) {
+    function loadWindowBundleByScript(url, timeoutMs, globalKey, timeoutErr, loadErr) {
+      const previous = window[globalKey];
       return new Promise((resolve, reject) => {
         const script = document.createElement("script");
         let done = false;
@@ -243,48 +220,192 @@
           if (done) return;
           done = true;
           script.remove();
-          reject(new Error("远程库存加载超时"));
+          window[globalKey] = previous;
+          reject(new Error(timeoutErr));
         }, timeoutMs);
 
+        delete window[globalKey];
         script.src = url;
         script.async = true;
         script.onload = () => {
           if (done) return;
           done = true;
           clearTimeout(timer);
-          resolve(window.STOCK_BUNDLE);
+          const bundle = window[globalKey];
+          if (!bundle) {
+            window[globalKey] = previous;
+            reject(new Error(loadErr));
+            return;
+          }
+          resolve(bundle);
         };
         script.onerror = () => {
           if (done) return;
           done = true;
           clearTimeout(timer);
           script.remove();
-          reject(new Error("远程库存脚本加载失败"));
+          window[globalKey] = previous;
+          reject(new Error(loadErr));
         };
         document.head.appendChild(script);
       });
     }
 
-    async function loadStockBundleByScript(url, timeoutMs) {
-      const previous = window.STOCK_BUNDLE;
-      try {
-        delete window.STOCK_BUNDLE;
-        const bundle = await loadRemoteStockScript(url, timeoutMs);
-        return parseStockBundle(bundle);
-      } catch (err) {
-        window.STOCK_BUNDLE = previous;
-        throw err;
+    async function parsePriceBundle(priceObj) {
+      if (!priceObj) throw new Error("未找到 price.bundle.js");
+      let jsonText = "";
+
+      if (priceObj.secured) {
+        setStatus("价格包已加密，请输入密码", "lock");
+        const pwd = prompt("请输入价格包密码：");
+        if (!pwd) throw new Error("未输入价格包密码");
+        try {
+          jsonText = await decryptData(priceObj.payload, pwd);
+        } catch (err) {
+          throw new Error("价格包解密失败，请确认密码");
+        }
+      } else {
+        jsonText = decodePlainPayload(priceObj.payload || "");
       }
+
+      const parsed = JSON.parse(jsonText || "{}");
+      return {
+        bySpec: parsed.bySpec || {},
+        meta: priceObj.meta || null
+      };
+    }
+
+    function parseStockBundle(stockObj) {
+      if (!stockObj) throw new Error("未找到 stock.bundle.js");
+      if (stockObj.secured) throw new Error("库存包必须保持明文");
+      const text = decodePlainPayload(stockObj.payload || "");
+      const parsed = JSON.parse(text || "{}");
+      return {
+        byCode: parsed.byCode || {},
+        meta: stockObj.meta || null
+      };
+    }
+
+    function getRemotePriceConfig() {
+      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remotePrice) || {};
+      return {
+        enabled: !!cfg.enabled,
+        manifestUrl: String(cfg.manifestUrl || "").trim(),
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
+        cacheBust: String(cfg.cacheBust || "daily")
+      };
+    }
+
+    function getRemoteStockConfig() {
+      const cfg = (window.APP_CONFIG && window.APP_CONFIG.remoteStock) || {};
+      return {
+        enabled: !!cfg.enabled,
+        url: String(cfg.url || "").trim(),
+        timeoutMs: Number(cfg.timeoutMs) > 0 ? Number(cfg.timeoutMs) : 8000,
+        cacheBust: String(cfg.cacheBust || "daily")
+      };
+    }
+
+    function applyPriceDataset(parsed, source) {
+      PRICE_DATA = { bySpec: parsed.bySpec || {} };
+      PRICE_META = parsed.meta || null;
+      PRICE_SOURCE = source;
+      updateVersionText();
+    }
+
+    function applyStockDataset(parsed, source) {
+      STOCK_DATA = { byCode: parsed.byCode || {} };
+      STOCK_META = parsed.meta || null;
+      STOCK_SOURCE = source;
+      updateVersionText();
+    }
+
+    async function loadPriceBundleByScript(url, timeoutMs) {
+      const priceObj = await loadWindowBundleByScript(
+        url,
+        timeoutMs,
+        "PRICE_BUNDLE",
+        "远程价格加载超时",
+        "远程价格脚本加载失败"
+      );
+      return parsePriceBundle(priceObj);
+    }
+
+    async function loadStockBundleByScript(url, timeoutMs) {
+      const stockObj = await loadWindowBundleByScript(
+        url,
+        timeoutMs,
+        "STOCK_BUNDLE",
+        "远程库存加载超时",
+        "远程库存脚本加载失败"
+      );
+      return parseStockBundle(stockObj);
+    }
+
+    async function loadRemotePriceFromManifest() {
+      const cfg = getRemotePriceConfig();
+      if (!cfg.enabled || !cfg.manifestUrl) throw new Error("未配置远程价格清单");
+
+      const manifestResp = await fetch(withCacheBust(cfg.manifestUrl, cfg.cacheBust), { cache: "no-store" });
+      if (!manifestResp.ok) throw new Error("远程价格清单加载失败 HTTP " + manifestResp.status);
+
+      const manifest = await manifestResp.json();
+      const latest = String((manifest && manifest.latest) || "").trim();
+      if (!latest) throw new Error("远程价格清单缺少 latest 字段");
+
+      const bundleUrl = new URL(latest, cfg.manifestUrl).href;
+      return loadPriceBundleByScript(bundleUrl, cfg.timeoutMs);
+    }
+
+    async function loadLocalPriceFallback() {
+      return loadPriceBundleByScript("price.bundle.js", 8000);
+    }
+
+    async function ensurePriceLoaded() {
+      if (g_PriceReady) return true;
+      if (g_PriceLoadingPromise) return g_PriceLoadingPromise;
+
+      g_PriceLoadingPromise = (async () => {
+        setSearchLoading(true);
+        try {
+          const cfg = getRemotePriceConfig();
+          if (cfg.enabled && cfg.manifestUrl) {
+            try {
+              const remote = await loadRemotePriceFromManifest();
+              applyPriceDataset(remote, "远程(manifest)");
+            } catch (err) {
+              showToast("远程价格失败，已回退本地");
+              const localFallback = await loadLocalPriceFallback();
+              applyPriceDataset(localFallback, "本地(回退)");
+            }
+          } else {
+            const localOnly = await loadLocalPriceFallback();
+            applyPriceDataset(localOnly, "本地");
+          }
+
+          g_PriceReady = true;
+          rebuildMergedDB();
+          setStatus("数据已加载", "ok");
+          return true;
+        } catch (err) {
+          setStatus("价格数据加载失败", "error");
+          showToast(err.message || "价格数据加载失败");
+          return false;
+        } finally {
+          setSearchLoading(false);
+          g_PriceLoadingPromise = null;
+        }
+      })();
+
+      return g_PriceLoadingPromise;
     }
 
     async function loadStockBundle() {
       const cfg = getRemoteStockConfig();
       if (cfg.enabled && cfg.url) {
         try {
-          const remoteUrl = withCacheBust(cfg.url, cfg.cacheBust);
-          const remote = await loadStockBundleByScript(remoteUrl, cfg.timeoutMs);
-          STOCK_DATA = { byCode: remote.byCode };
-          updateVersionText(window.PRICE_BUNDLE.meta, remote.meta, "远程(stock-data)");
+          const remote = await loadStockBundleByScript(withCacheBust(cfg.url, cfg.cacheBust), cfg.timeoutMs);
+          applyStockDataset(remote, "远程(stock-data)");
           return;
         } catch (err) {
           showToast("远程库存失败，已回退本地");
@@ -292,38 +413,42 @@
       }
 
       const local = await loadStockBundleByScript("stock.bundle.js", 8000);
-      STOCK_DATA = { byCode: local.byCode };
       const source = (cfg.enabled && cfg.url) ? "本地(回退)" : "本地(自动同步)";
-      updateVersionText(window.PRICE_BUNDLE.meta, local.meta, source);
+      applyStockDataset(local, source);
     }
 
     function rebuildMergedDB() {
-        DB = {};
-        const bySpec = PRICE_DATA.bySpec || {};
-        const byCode = STOCK_DATA.byCode || {};
+      DB = {};
+      const bySpec = PRICE_DATA.bySpec || {};
+      const byCode = STOCK_DATA.byCode || {};
 
-        Object.keys(bySpec).forEach(spec => {
-            const item = bySpec[spec] || {};
-            const code = item.c || "";
-            DB[spec] = {
-                c: code,
-                p: Number(item.p) || 0,
-                s: item.s || "",
-                r: item.r || "",
-                b: item.b || "",
-                i: byCode[code] || ""
-            };
-        });
+      Object.keys(bySpec).forEach(spec => {
+          const item = bySpec[spec] || {};
+          const code = item.c || "";
+          DB[spec] = {
+              c: code,
+              p: Number(item.p) || 0,
+              s: item.s || "",
+              r: item.r || "",
+              b: item.b || "",
+              i: byCode[code] || ""
+          };
+      });
     }
 
-    function updateVersionText(priceMeta, stockMeta, stockSource) {
-      const pVer = (priceMeta && priceMeta.version) ? priceMeta.version : "-";
-      const sVer = (stockMeta && stockMeta.version) ? stockMeta.version : "-";
-      const src = stockSource || "本地(自动同步)";
-      document.getElementById("versions").textContent = "价格版本: " + pVer + " | 库存版本: " + sVer + " | 库存来源: " + src;
+    function updateVersionText() {
+      const pVer = (PRICE_META && PRICE_META.version) ? PRICE_META.version : "-";
+      const sVer = (STOCK_META && STOCK_META.version) ? STOCK_META.version : "-";
+      const pSrc = PRICE_SOURCE || "未加载";
+      const sSrc = STOCK_SOURCE || "未加载";
+      document.getElementById("versions").textContent =
+        "价格版本: " + pVer + " | 价格来源: " + pSrc + " | 库存版本: " + sVer + " | 库存来源: " + sSrc;
     }
 
-    function doSearch() {
+    async function doSearch() {
+        const ready = await ensurePriceLoaded();
+        if (!ready) return;
+
         const text = document.getElementById('queryInput').value;
         const discount = parseFloat(document.getElementById('discount').value) || 1;
         const decimals = parseInt(document.getElementById('decimals').value) || 0;

@@ -1,0 +1,58 @@
+name: Publish Price Bundle
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-price-bundle
+  cancel-in-progress: false
+
+jobs:
+  publish-price:
+    runs-on: ubuntu-latest
+    env:
+      STOCK_BRANCH: stock-data
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+
+      - name: Prepare stock-data worktree
+        run: |
+          git fetch origin "$STOCK_BRANCH" || true
+          WORKTREE_DIR=$(mktemp -d)
+          echo "WORKTREE_DIR=$WORKTREE_DIR" >> "$GITHUB_ENV"
+
+          if git show-ref --verify --quiet "refs/remotes/origin/$STOCK_BRANCH"; then
+            git worktree add -B "$STOCK_BRANCH" "$WORKTREE_DIR" "origin/$STOCK_BRANCH"
+          else
+            git worktree add -B "$STOCK_BRANCH" "$WORKTREE_DIR"
+          fi
+
+      - name: Publish hashed price bundle
+        run: |
+          node tools/publish_price_bundle.mjs --input apps/v9/price.bundle.js --output-root "$WORKTREE_DIR/apps/v9"
+
+      - name: Commit and push to stock-data
+        run: |
+          cd "$WORKTREE_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/v9/price apps/v9/price-manifest.json
+          if git diff --cached --quiet; then
+            echo "No price bundle changes"
+            cd - >/dev/null
+            git worktree remove "$WORKTREE_DIR" --force
+            exit 0
+          fi
+          git commit -m "chore: publish price bundle"
+          git push origin HEAD:"$STOCK_BRANCH"
+          cd - >/dev/null
+          git worktree remove "$WORKTREE_DIR" --force

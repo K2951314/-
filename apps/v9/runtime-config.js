@@ -1,4 +1,10 @@
 window.APP_CONFIG = {
+  remotePrice: {
+    enabled: true,
+    manifestUrl: "https://cdn.jsdelivr.net/gh/K2951314/-@stock-data/apps/v9/price-manifest.json",
+    timeoutMs: 8000,
+    cacheBust: "daily",
+  },
   remoteStock: {
     enabled: true,
     url: "https://cdn.jsdelivr.net/gh/K2951314/-@stock-data/apps/v9/stock.bundle.js",
