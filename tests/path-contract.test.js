@@ -25,8 +25,12 @@ function run() {
   assert.ok(exists(system.app.stock_bundle_path), "stock bundle path does not exist");
   assert.ok(exists("apps/v9/runtime-config.js"), "runtime stock config should exist");
   assert.ok(exists(system.sync.script_path), "sync script path does not exist");
+  assert.ok(exists("tools/sync_price_bundle.mjs"), "price sync tool should exist");
+  assert.ok(exists("config/price-source.json"), "price source config should exist");
+  assert.ok(exists("config/price-source.schema.json"), "price source schema should exist");
   assert.ok(exists("tools/publish_price_bundle.mjs"), "price publish tool should exist");
   assert.ok(exists(".github/workflows/publish-price.yml"), "price publish workflow should exist");
+  assert.ok(exists(".github/workflows/sync-price.yml"), "price sync workflow should exist");
 
   const workflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/sync-stock.yml"), "utf8");
   assert.ok(workflow.includes("config/system.json"), "workflow should read config/system.json");
@@ -35,6 +39,9 @@ function run() {
 
   const publishWorkflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/publish-price.yml"), "utf8");
   assert.ok(publishWorkflow.includes("stock-data"), "publish workflow should target stock-data branch");
+  const syncPriceWorkflow = fs.readFileSync(path.join(process.cwd(), ".github/workflows/sync-price.yml"), "utf8");
+  assert.ok(syncPriceWorkflow.includes("stock-data"), "sync-price workflow should target stock-data branch");
+  assert.ok(syncPriceWorkflow.includes("PRICE_BUNDLE_PASSWORD"), "sync-price workflow should support encrypted mode");
 
   const netlify = fs.readFileSync(path.join(process.cwd(), "netlify.toml"), "utf8");
   assert.ok(netlify.includes('publish = "apps/v9"'), "netlify publish directory should target apps/v9");

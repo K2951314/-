@@ -1,0 +1,8 @@
+{
+  "price_source_url": "",
+  "price_source_token": "",
+  "allowed_content_types": ["xlsx"],
+  "timeout_ms": 15000,
+  "max_bytes": 20971520,
+  "allowed_domains": []
+}

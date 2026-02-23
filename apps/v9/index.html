@@ -23,6 +23,8 @@
     .btn { flex: 1; padding: 10px; border: none; border-radius: 4px; color: white; font-weight: bold; cursor: pointer; min-width: 90px; }
     .btn-search { background: #1a73e8; }
     .btn-search:hover { background: #1557b0; }
+    .btn-regex { background: #0f766e; }
+    .btn-regex:hover { background: #0b5f59; }
     .btn-copy { background: #f59e0b; }
     .btn-copy:hover { background: #d97706; }
 
@@ -78,6 +80,7 @@
             <div class="group"><label>小数位</label><input type="number" id="decimals" value="1" step="1"></div>
             <div class="group"><label>取整阈值</label><input type="number" id="threshold" value="100" step="1"></div>
             <button id="btnSearch" class="btn btn-search" onclick="doSearch()">智能匹配</button>
+            <button id="btnRegexConvert" class="btn btn-regex" onclick="doRegexSearchConverted()">正则转换</button>
             <button class="btn btn-copy" onclick="doCopy()">复制勾选</button>
         </div>
 
@@ -116,6 +119,7 @@
     </div>
 </div>
 
+<script src="./lib/query-regex.js"></script>
 <script src="runtime-config.js"></script>
 <script>
     let PRICE_DATA = { bySpec: {} };
@@ -153,14 +157,17 @@
 
     function setSearchLoading(loading) {
       const btn = document.getElementById("btnSearch");
+      const regexBtn = document.getElementById("btnRegexConvert");
       if (!btn) return;
       if (loading) {
         if (!btn.dataset.defaultText) btn.dataset.defaultText = btn.textContent;
         btn.textContent = "加载价格数据中...";
         btn.disabled = true;
+        if (regexBtn) regexBtn.disabled = true;
       } else {
         btn.textContent = btn.dataset.defaultText || "智能匹配";
         btn.disabled = false;
+        if (regexBtn) regexBtn.disabled = false;
       }
     }
 
@@ -445,11 +452,69 @@
         "价格版本: " + pVer + " | 价格来源: " + pSrc + " | 库存版本: " + sVer + " | 库存来源: " + sSrc;
     }
 
-    async function doSearch() {
-        const ready = await ensurePriceLoaded();
-        if (!ready) return;
-
+    function getQueryLines() {
         const text = document.getElementById('queryInput').value;
+        return text.split(/\r?\n/).filter(l => l.trim());
+    }
+
+    function escapeRegexLiteral(text) {
+        if (!window.QueryRegex || typeof window.QueryRegex.escapeRegexLiteral !== "function") {
+            throw new Error("正则模块未加载");
+        }
+        return window.QueryRegex.escapeRegexLiteral(text);
+    }
+
+    function convertPlainLineToRegex(line) {
+        if (!window.QueryRegex || typeof window.QueryRegex.convertPlainLineToRegex !== "function") {
+            throw new Error("正则模块未加载");
+        }
+        return window.QueryRegex.convertPlainLineToRegex(line);
+    }
+
+    function matchRegexTarget(spec, code, remark, re) {
+        if (!window.QueryRegex || typeof window.QueryRegex.matchRegexTarget !== "function") {
+            throw new Error("正则模块未加载");
+        }
+        return window.QueryRegex.matchRegexTarget(spec, code, remark, re);
+    }
+
+    function appendResultRow(tbody, line, matchKey, item, discount, decimals, threshold, isExact) {
+        const priceInfo = calcDiscountedPrice(item.p, discount, decimals, threshold);
+        const rowData = {
+            id: g_Results.length,
+            code: item.c,
+            spec: matchKey,
+            price: priceInfo.display,
+            facePrice: item.p,
+            remark: item.r,
+            special: item.s,
+            stock: item.i,
+            discount: discount,
+            checked: isExact
+        };
+        g_Results.push(rowData);
+
+        const tr = document.createElement('tr');
+        if(isExact) tr.className = 'match-exact';
+        tr.innerHTML = `
+            <td><input type="checkbox" data-id="${rowData.id}" ${isExact?'checked':''}></td>
+            <td>${matchKey}</td>
+            <td>${item.p}</td>
+            <td class="price">${priceInfo.display}</td>
+            <td>
+                <div class="discount-cell">
+                    <input class="discount-input" type="number" step="0.01" value="${(rowData.discount * 100).toFixed(2)}" data-id="${rowData.id}" oninput="onRowDiscountChange(this)">
+                    <span class="discount-suffix">%</span>
+                </div>
+            </td>
+            <td>${item.c}</td>
+            <td class="stock">${item.i || ""}</td>
+            <td>${item.r || ""}</td>
+        `;
+        tbody.appendChild(tr);
+    }
+
+    function renderSearchResults(lines, lineMatcher, exactMatcher) {
         const discount = parseFloat(document.getElementById('discount').value) || 1;
         const decimals = parseInt(document.getElementById('decimals').value) || 0;
         const threshold = parseFloat(document.getElementById('threshold').value) || 100;
@@ -458,62 +523,62 @@
         tbody.innerHTML = '';
         g_Results = [];
 
-        const lines = text.split(/\r?\n/).filter(l => l.trim());
         const allKeys = Object.keys(DB);
 
         lines.forEach(line => {
-            const keywords = line.trim().toUpperCase().split(/\s+/);
-            if (!keywords.length) return;
-
-            const matches = allKeys.filter(key => {
-                const item = DB[key];
-                const fullStr = (key + " " + item.c).toUpperCase();
-                return keywords.every(kw => fullStr.includes(kw));
-            });
+            const matches = lineMatcher(line, allKeys) || [];
 
             matches.forEach(matchKey => {
                 const item = DB[matchKey];
-                const priceInfo = calcDiscountedPrice(item.p, discount, decimals, threshold);
-                const isExact = (matchKey.toUpperCase() === line.trim().toUpperCase());
-
-                const rowData = {
-                    id: g_Results.length,
-                    code: item.c,
-                    spec: matchKey,
-                    price: priceInfo.display,
-                    facePrice: item.p,
-                    remark: item.r,
-                    special: item.s,
-                    stock: item.i,
-                    discount: discount,
-                    checked: isExact
-                };
-                g_Results.push(rowData);
-
-                const tr = document.createElement('tr');
-                if(isExact) tr.className = 'match-exact';
-                tr.innerHTML = `
-                    <td><input type="checkbox" data-id="${rowData.id}" ${isExact?'checked':''}></td>
-                    <td>${matchKey}</td>
-                    <td>${item.p}</td>
-                    <td class="price">${priceInfo.display}</td>
-                    <td>
-                        <div class="discount-cell">
-                            <input class="discount-input" type="number" step="0.01" value="${(rowData.discount * 100).toFixed(2)}" data-id="${rowData.id}" oninput="onRowDiscountChange(this)">
-                            <span class="discount-suffix">%</span>
-                        </div>
-                    </td>
-                    <td>${item.c}</td>
-                    <td class="stock">${item.i || ""}</td>
-                    <td>${item.r || ""}</td>
-                `;
-                tbody.appendChild(tr);
+                if (!item) return;
+                const isExact = exactMatcher ? exactMatcher(line, matchKey) : false;
+                appendResultRow(tbody, line, matchKey, item, discount, decimals, threshold, isExact);
             });
         });
 
         if(g_Results.length === 0) {
             tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#999;padding:20px">没有找到匹配项</td></tr>';
         }
+    }
+
+    async function doSearch() {
+        const ready = await ensurePriceLoaded();
+        if (!ready) return;
+
+        const lines = getQueryLines();
+        renderSearchResults(
+            lines,
+            (line, allKeys) => {
+                const keywords = line.trim().toUpperCase().split(/\s+/);
+                if (!keywords.length) return [];
+                return allKeys.filter(key => {
+                    const item = DB[key];
+                    const fullStr = (key + " " + item.c).toUpperCase();
+                    return keywords.every(kw => fullStr.includes(kw));
+                });
+            },
+            (line, matchKey) => (matchKey.toUpperCase() === line.trim().toUpperCase())
+        );
+    }
+
+    async function doRegexSearchConverted() {
+        const ready = await ensurePriceLoaded();
+        if (!ready) return;
+
+        const lines = getQueryLines();
+        renderSearchResults(
+            lines,
+            (line, allKeys) => {
+                const re = convertPlainLineToRegex(line);
+                if (!re) return [];
+                return allKeys.filter(key => {
+                    const item = DB[key] || {};
+                    return matchRegexTarget(key, item.c || "", item.r || "", re);
+                });
+            },
+            () => false
+        );
+        showToast("已按正则转换并查询");
     }
 
     function calcDiscountedPrice(facePrice, discount, decimals, threshold) {
