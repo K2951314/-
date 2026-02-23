@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Price Source Config",
+  "type": "object",
+  "required": [
+    "price_source_url",
+    "allowed_content_types",
+    "timeout_ms",
+    "max_bytes"
+  ],
+  "properties": {
+    "price_source_url": {
+      "type": "string",
+      "minLength": 1
+    },
+    "price_source_token": {
+      "type": "string"
+    },
+    "allowed_content_types": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": ["csv", "json", "xlsx", "js"]
+      },
+      "minItems": 1
+    },
+    "timeout_ms": {
+      "type": "integer",
+      "minimum": 1000
+    },
+    "max_bytes": {
+      "type": "integer",
+      "minimum": 1024
+    },
+    "allowed_domains": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,112 @@
+name: Sync Price Bundle
+
+on:
+  schedule:
+    - cron: "15 16 * * *"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "price bundle mode"
+        required: true
+        type: choice
+        default: encrypted
+        options:
+          - encrypted
+          - plain
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-price-bundle
+  cancel-in-progress: false
+
+jobs:
+  sync-price:
+    runs-on: ubuntu-latest
+    env:
+      STOCK_BRANCH: stock-data
+      PRICE_MODE: ${{ github.event.inputs.mode || 'encrypted' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate required source secret
+        run: |
+          if [ -z "${{ secrets.PRICE_SOURCE_URL }}" ]; then
+            echo "PRICE_SOURCE_URL is not set"
+            exit 1
+          fi
+
+      - name: Validate encryption secret when needed
+        run: |
+          if [ "$PRICE_MODE" = "encrypted" ] && [ -z "${{ secrets.PRICE_BUNDLE_PASSWORD }}" ]; then
+            echo "PRICE_BUNDLE_PASSWORD is required in encrypted mode"
+            exit 1
+          fi
+
+      - name: Seed previous price artifact from stock-data
+        run: |
+          mkdir -p tmp
+          git fetch origin "$STOCK_BRANCH" || true
+          MANIFEST_PATH="apps/v9/price-manifest.json"
+          if git show "origin/$STOCK_BRANCH:$MANIFEST_PATH" >/dev/null 2>&1; then
+            LATEST=$(git show "origin/$STOCK_BRANCH:$MANIFEST_PATH" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const m=JSON.parse(d);process.stdout.write(String(m.latest||''));}catch(e){}})")
+            if [ -n "$LATEST" ] && git show "origin/$STOCK_BRANCH:apps/v9/$LATEST" >/dev/null 2>&1; then
+              git show "origin/$STOCK_BRANCH:apps/v9/$LATEST" > tmp/price.bundle.js
+              echo "Seeded previous price artifact from $LATEST"
+            else
+              echo "No previous hashed price artifact found"
+            fi
+          else
+            echo "No previous price manifest found on $STOCK_BRANCH"
+          fi
+
+      - name: Build price bundle artifact
+        env:
+          PRICE_SOURCE_URL: ${{ secrets.PRICE_SOURCE_URL }}
+          PRICE_SOURCE_TOKEN: ${{ secrets.PRICE_SOURCE_TOKEN }}
+          PRICE_BUNDLE_PASSWORD: ${{ secrets.PRICE_BUNDLE_PASSWORD }}
+        run: |
+          mkdir -p tmp
+          node tools/sync_price_bundle.mjs --config config/system.json --price-config config/price-source.json --output tmp/price.bundle.js --mode "$PRICE_MODE"
+
+      - name: Publish hashed price bundle to stock-data branch
+        run: |
+          if [ ! -f "tmp/price.bundle.js" ]; then
+            echo "Price artifact not found: tmp/price.bundle.js"
+            exit 1
+          fi
+
+          git fetch origin "$STOCK_BRANCH" || true
+          WORKTREE_DIR=$(mktemp -d)
+          if git show-ref --verify --quiet "refs/remotes/origin/$STOCK_BRANCH"; then
+            git worktree add -B "$STOCK_BRANCH" "$WORKTREE_DIR" "origin/$STOCK_BRANCH"
+          else
+            git worktree add -B "$STOCK_BRANCH" "$WORKTREE_DIR"
+          fi
+
+          node tools/publish_price_bundle.mjs --input "$GITHUB_WORKSPACE/tmp/price.bundle.js" --output-root "$WORKTREE_DIR/apps/v9"
+
+          cd "$WORKTREE_DIR"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add apps/v9/price apps/v9/price-manifest.json
+          if git diff --cached --quiet; then
+            echo "No price bundle changes"
+            cd - >/dev/null
+            git worktree remove "$WORKTREE_DIR" --force
+            exit 0
+          fi
+          git commit -m "chore: auto-sync price bundle ($PRICE_MODE)"
+          git push origin HEAD:"$STOCK_BRANCH"
+          cd - >/dev/null
+          git worktree remove "$WORKTREE_DIR" --force
